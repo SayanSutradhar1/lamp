@@ -1,0 +1,28 @@
+{
+  "name": "lamp",
+  "version": "0.1.0",
+  "description": "TypeScript application SDK for the Lamp native backend runtime",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/sdk.test.ts",
+    "example": "node examples/users_service.ts"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "keywords": [
+    "lamp",
+    "backend",
+    "operations",
+    "v8",
+    "rpc"
+  ]
+}

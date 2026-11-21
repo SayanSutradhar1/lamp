@@ -1,0 +1,61 @@
+name: Lamp CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  native-cpp:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, windows-2022 ]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (Native + Benchmarks + Tests, V8 OFF)
+        run: >
+          cmake -S . -B build-ci
+          -DCMAKE_BUILD_TYPE=Release
+          -DLAMP_BUILD_TESTS=ON
+          -DLAMP_BUILD_BENCHMARKS=ON
+          -DLAMP_ENABLE_V8=OFF
+
+      - name: Build
+        run: cmake --build build-ci --config Release --parallel 4
+
+      - name: Run CTest
+        run: ctest --test-dir build-ci -C Release --output-on-failure
+
+      - name: Run Benchmarks Smoke
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./build-ci/benchmarks/Release/lamp_runtime_benchmark.exe || ./build-ci/benchmarks/lamp_runtime_benchmark.exe
+          else
+            ./build-ci/benchmarks/lamp_runtime_benchmark
+          fi
+        shell: bash
+
+  typescript-sdk:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Run TypeScript SDK Tests
+        working-directory: sdk-ts
+        run: node --test tests/sdk.test.ts
+
+      - name: Run Canonical Example
+        working-directory: sdk-ts
+        run: node examples/users_service.ts
