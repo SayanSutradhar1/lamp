@@ -72,13 +72,13 @@ set(LAMP_RUNTIME_COMPONENTS
     http
     v8
     bridge
-    transport
-    router
     cache
     execution
     serialization
     streaming
     security
+    transport
+    router
     telemetry
 )
 

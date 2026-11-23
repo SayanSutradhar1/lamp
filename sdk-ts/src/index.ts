@@ -1,48 +1,57 @@
-// ============================================================
-// Lamp TypeScript SDK - Public Entry Point
-// ============================================================
+/**
+ * Lamp Server-Side Contract SDK (`lamp`).
+ *
+ * Declares typed non-REST operation contracts, input/output schemas (including native binary
+ * files via `s.file()`), lifecycle hooks, parallel worker splitting (`ctx.parallel`), and
+ * full-cycle caching policies executed by the C++ native backend runtime (`lamp_server`).
+ *
+ * Client contracts live in the separate `lamp-client` package.
+ *
+ * @packageDocumentation
+ */
 
-export { createLampApp, isValidOperationId, type LampApp, type LifecycleHook } from "./app.ts";
-export {
-  LampError,
-  isLampError,
-  normalizeLampError,
-  type LampErrorCode,
-  type LampErrorOptions,
-} from "./errors.ts";
-export { resolveNativeHostBridge } from "./native_bridge.ts";
-export {
-  s,
-  validateSchema,
-  type AnySchema,
-  type ExternalParseSchema,
-  type InferSchema,
-  type LampSchema,
-  type NumberSchemaOptions,
-  type ObjectShape,
-  type SchemaIssue,
-  type SchemaParseResult,
-  type StringSchemaOptions,
+export { createLampApp, isValidOperationId } from "./app.ts";
+export { LampError, isLampError, normalizeLampError } from "./errors.ts";
+export { getNativeHostBridge, setNativeHostBridge } from "./native_bridge.ts";
+export { s, validateWithSchema } from "./schema.ts";
+
+export type { LampErrorCode, LampErrorOptions } from "./errors.ts";
+export type {
+  NativeHostBridge,
+  NativeParallelTaskPayload,
+} from "./native_bridge.ts";
+export type {
+  FileSchemaOptions,
+  InferSchema,
+  LampSchema,
+  LampSchemaIssue,
+  LampSchemaResult,
+  NumberSchemaOptions,
+  StringSchemaOptions,
 } from "./schema.ts";
 export type {
-  AppCacheConfig,
-  AppSecurityConfig,
-  CacheModePolicy,
-  ConcurrencyPolicy,
-  ExecutionPolicy,
-  InvokeOptions,
+  InvokeCallOptions,
+  LampApp,
+  LampAppCacheConfig,
   LampAppConfig,
   LampAppState,
+  LampExecutionMode,
+  LampFile,
+  LampParallelTaskSpec,
+  LampSecurityConfig,
+  LampSerializationMode,
   LampStartInfo,
-  NativeHostBridge,
+  LampTransportMode,
+  LampWorkerPoolConfig,
+  LifecycleHook,
   OperationAuthConfig,
+  OperationAuthContext,
   OperationCacheConfig,
+  OperationConcurrencyMode,
   OperationContext,
   OperationDefinition,
   OperationExecutionConfig,
+  OperationHandler,
   OperationHandlerArgs,
-  PrincipalContext,
   RegisteredOperationMetadata,
-  SerializationPolicy,
-  TransportPolicy,
 } from "./types.ts";

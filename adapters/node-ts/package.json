@@ -1,0 +1,21 @@
+{
+  "name": "@lamp/node-adapter",
+  "version": "0.1.0",
+  "description": "Node.js LMP1/LCB1 binary protocol adapter bridging Node-dependent libraries (e.g. Mongoose) to Lamp binary clients",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "lamp": "file:../../sdk-ts",
+    "lamp-client": "file:../../client-ts"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}

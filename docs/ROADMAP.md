@@ -77,6 +77,12 @@ Statuses reflect the **latest supplied build log (2026-11-21)** and the current 
 - Implemented `runtime/telemetry/` (`lamp::telemetry`): `metrics_registry.hpp`, `tracing.hpp`, `health_check.hpp`, `telemetry_dispatcher.hpp` (`lamp_telemetry_test`, 4/4 passed).
 - Implemented `benchmarks/` (`LAMP_BUILD_BENCHMARKS=ON`, `lamp_runtime_benchmark` verified across 7 Release runtime micro-benchmarks), `.github/workflows/ci.yml` cross-platform CI workflow, and `docs/PRODUCTION.md`.
 
+## Phase 13 — Pure-Binary Protocol (`LMP1`/`LCB1`), Dynamic Core Threading & Split SDKs — COMPLETED
+- Implemented `runtime/core/dynamic_worker_pool.hpp` (`DynamicWorkerPool` auto-scaling `min_threads..max_threads` + `RunParallel` subtask fan-out, `lamp.core.dynamic_worker_pool` 2/2 passed).
+- Implemented `runtime/transport/` (`lamp_binary_protocol.hpp`, `async_binary_converter.hpp`, `wire_cache.hpp`, `lamp_binary_server.hpp` — `lamp_transport_test` 4/4 passed: `4.59x` faster & `2.62x` less bandwidth than REST, full-cycle cache TTL capped by `max_ttl_limit`).
+- Upgraded `host/` (`LampBinaryServer` + `LampV8RuntimeScheduler` with `s.file()` binary hydration & `ctx.parallel` worker isolates — `lamp_app_server_test` passed).
+- Split TypeScript SDKs with complete JSDoc into server-only `sdk-ts/` (`lamp` — 5/5 passed) and dedicated binary `client-ts/` (`lamp-client` Node TCP & Browser binary WebSocket — 2/2 E2E passed).
+
 ## Roadmap discipline
 - Each phase requires real tests and integration evidence.
 - Preserve backward compatibility when feasible.

@@ -1,7 +1,7 @@
 # Lamp — Phase Progress Tracker
 
-**Last updated:** 2026-11-22
-**Verified build & test baseline:** **44/44** CTest suites passed (MSVC x64 Release, C++20, V8 `ON`, `LAMP_BUILD_BENCHMARKS=ON`, `9.68 sec`, exit code `0`) + **7/7** `sdk-ts` Node/TypeScript tests passed (`207.9ms`).
+**Last updated:** 2026-11-23
+**Verified build & test baseline:** **47/47** CTest suites passed (MSVC x64 Release, C++20, V8 `ON`, `13.66 sec`, exit code `0`), **5/5** `sdk-ts` (`lamp`) server contract tests passed, **2/2** `client-ts` (`lamp-client`) live binary TCP/WebSocket E2E tests passed.
 
 > **Maintenance rule:** Update this file at the end of every development prompt alongside [CURRENT.md](CURRENT.md), [ROADMAP.md](ROADMAP.md), and [TESTS.md](TESTS.md) using only directly verified repository and test results.
 
@@ -9,12 +9,11 @@
 
 ## Overall Summary
 
-- **Completed phases:** Phases 1 – 12 (12 of 12 roadmap phases complete).
-- **Next phase:** Maintenance / Remote CI execution (no pending roadmap phases).
+- **Completed phases:** Phases 1 – 13 (Binary Non-REST Transport, Dynamic Core Multithreading, Full-Cycle TTL Wire Cache, Split `lamp` & `lamp-client` SDKs).
+- **Next phase:** Maintenance / Optional native database connector plugins in `runtime/`.
 - **Runtime modules (`runtime/CMakeLists.txt`):**
-  - Implemented (10): `core`, `http`, `v8`, `bridge` (including `V8SdkHostBridge`), `cache`, `execution`, `serialization`, `streaming`, `security`, `telemetry`
-  - Architectural placeholder slots merged into `http`/`bridge` (2): `transport`, `router` (implemented in `http/http_router.hpp`, `http/http_route_group.hpp`, `http/http_async_server.hpp`, `bridge/http_transport_adapter.hpp`, `bridge/async_http_transport_adapter.hpp`)
-- **TypeScript SDK (`sdk-ts/`, `createLampApp`):** Implemented & verified (matches [INTERFACE.md](INTERFACE.md)).
+  - Implemented (11): `core` (incl. `DynamicWorkerPool`), `http`, `v8`, `bridge`, `cache`, `execution`, `serialization`, `streaming`, `security`, `transport` (`LMP1`/`LCB1`, `AsyncBinaryStreamConverter`, `FullCycleWireCache`, `LampBinaryServer`), `telemetry`
+- **Split TypeScript SDKs:** `sdk-ts/` (`lamp` server contracts) and `client-ts/` (`lamp-client` Node TCP & browser binary WebSocket client contracts), fully documented with JSDoc.
 
 | Phase | Title | Status | Work Completed | Work Pending | Verification Evidence |
 | :--- | :--- | :--- | :--- | :--- | :--- |

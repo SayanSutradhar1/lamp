@@ -219,6 +219,10 @@ endif()
 
 add_subdirectory(runtime)
 
+if(LAMP_ENABLE_V8)
+    add_subdirectory(host)
+endif()
+
 if(LAMP_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
 endif()

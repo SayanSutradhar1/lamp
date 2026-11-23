@@ -32,11 +32,16 @@ ctest --test-dir build-msvc-v8 -N
 
 CTest counts **test executables/suites**, not the number of individual assertions inside them.
 
-## Latest verified full CTest (2026-11-22)
-- **44/44 suites passed**
+## Latest verified full CTest (2026-11-23)
+- **47/47 suites passed** (`100%`)
 - **Build exit code: 0**
 - **CTest exit code: 0**
-- **Total test time: 9.68 seconds**
+- **Total test time: 13.66 seconds**
+- Host: 1 pure-binary TCP/WebSocket server suite (`lamp_app_server_test`: `LMP1`/`LCB1` roundtrips, REST rejection `404`, `s.file()` binary upload, `FullCycleWireCache` hit & `5000ms` TTL cap, `ctx.parallel` subtask execution).
+- Transport (`lamp_transport_test`): **4/4** (`CompactBinaryAndBandwidthSavings` `2.16x` smaller, `AsyncBinaryStreamingConversion`, `FullCycleWireCacheAndTtlUpperLimit`, `BinaryServerSpeedAndBandwidthVsRest` **`4.59x` faster & `2.62x` less bandwidth**).
+- Core: **9 suites** (includes `lamp.core.dynamic_worker_pool` — 2/2 elastic scaling + parallel subtask tests).
+- Server SDK (`node --test .\sdk-ts\tests\sdk.test.ts`): **5/5 tests passed** (`lamp` server-only contracts + `s.file()` + `ctx.parallel` + TTL upper limit).
+- Client SDK (`node --test .\client-ts\tests\client_binary.test.ts`): **2/2 tests passed** (async binary request stream chunking + live C++ `lamp_server.exe` TCP & WebSocket binary E2E).
 - HTTP: 11 suites (`lamp_http_async_server_test` added).
 - V8-specific component: 16 labeled tests (8 `runtime/v8/` unit suites + 8 V8 execution/bridge/SDK integration suites).
 - Bridge: 5 labeled suites (`lamp_bridge_integration`, `lamp_async_operation_coordinator`, `lamp_async_http_operation_pump`, `lamp_v8_async_http_pump_integration`, `lamp_v8_sdk_host_bridge`).

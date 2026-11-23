@@ -217,4 +217,14 @@ if(LAMP_BUILD_TESTS)
         lamp.core.service_registry
     )
 
+    # --------------------------------------------------------
+    # Dynamic Worker Pool & Parallel Subtasks Tests
+    # --------------------------------------------------------
+
+    lamp_add_core_test(
+        lamp_core_dynamic_worker_pool_tests
+        dynamic_worker_pool_test.cpp
+        lamp.core.dynamic_worker_pool
+    )
+
 endif()

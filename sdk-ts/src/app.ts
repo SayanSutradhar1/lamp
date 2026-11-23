@@ -1,425 +1,319 @@
-// ============================================================
-// Lamp TypeScript SDK - Application Core (`createLampApp`)
-// Matches docs/INTERFACE.md canonical design target.
-// ============================================================
-
 import { LampError, normalizeLampError } from "./errors.ts";
-import { resolveNativeHostBridge } from "./native_bridge.ts";
-import { type AnySchema, validateSchema } from "./schema.ts";
+import { getNativeHostBridge } from "./native_bridge.ts";
+import { validateWithSchema } from "./schema.ts";
 import type {
-  AppCacheConfig,
-  AppSecurityConfig,
-  ExecutionPolicy,
-  InvokeOptions,
+  InvokeCallOptions,
+  LampApp,
   LampAppConfig,
   LampAppState,
+  LampFile,
+  LampParallelTaskSpec,
   LampStartInfo,
-  NativeHostBridge,
-  OperationAuthConfig,
-  OperationCacheConfig,
+  LifecycleHook,
   OperationContext,
   OperationDefinition,
-  OperationExecutionConfig,
-  PrincipalContext,
   RegisteredOperationMetadata,
-  SerializationPolicy,
-  TransportPolicy,
 } from "./types.ts";
 
-// Mirrors runtime/bridge/operation_descriptor.hpp OperationDescriptor::IsValidId
-export function isValidOperationId(value: string): boolean {
-  if (value.length === 0 || value.length > 128) {
-    return false;
+const OPERATION_ID_RE = /^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*$/;
+const DEFAULT_MAX_TTL_LIMIT_SECONDS = 300;
+
+interface StoredOperation {
+  readonly meta: RegisteredOperationMetadata;
+  readonly definition: OperationDefinition<any, any>;
+}
+
+/**
+ * Validates whether a string follows Lamp's canonical dotted operation identifier syntax.
+ *
+ * Lamp replaces HTTP URL routes with logical dotted IDs such as `"users.create"` or
+ * `"billing.invoices.generate"`.
+ *
+ * @param id - Candidate operation name.
+ * @returns `true` if valid and non-empty.
+ */
+export function isValidOperationId(id: string): boolean {
+  return id.length > 0 && OPERATION_ID_RE.test(id);
+}
+
+function hydrateFileReferences(
+  val: unknown,
+  files: readonly LampFile[],
+  depth = 0
+): unknown {
+  if (
+    depth > 32 ||
+    files.length === 0 ||
+    val === null ||
+    typeof val !== "object" ||
+    val instanceof Uint8Array ||
+    ArrayBuffer.isView(val)
+  ) {
+    return val;
   }
-  let previousSeparator = true;
-  for (let i = 0; i < value.length; i += 1) {
-    const ch = value.charCodeAt(i);
-    const isAlpha = (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122);
-    const isDigit = ch >= 48 && ch <= 57;
-    const isSep = ch === 46 || ch === 45 || ch === 95; // '.' '-' '_'
-    if (!isAlpha && !isDigit && !isSep) {
-      return false;
-    }
-    if (isSep) {
-      if (previousSeparator) {
-        return false;
+  if (Array.isArray(val)) {
+    return val.map((item) => hydrateFileReferences(item, files, depth + 1));
+  }
+  const rec = val as Record<string, unknown>;
+  if (typeof rec.__lampFileRef === "number" && Number.isInteger(rec.__lampFileRef)) {
+    return files[rec.__lampFileRef] ?? val;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rec)) {
+    out[k] = hydrateFileReferences(v, files, depth + 1);
+  }
+  return out;
+}
+
+async function runParallelTasks(
+  itemsOrTasks: readonly unknown[],
+  mapperFn?: (item: any) => any
+): Promise<unknown[]> {
+  let specs: Array<{ fn: string; input: unknown }>;
+  if (typeof mapperFn === "function") {
+    const fnStr = mapperFn.toString();
+    specs = itemsOrTasks.map((item) => ({ fn: fnStr, input: item }));
+  } else {
+    specs = itemsOrTasks.map((entry) => {
+      if (typeof entry === "function") {
+        return { fn: entry.toString(), input: null };
       }
-      previousSeparator = true;
-    } else {
-      previousSeparator = false;
-    }
-  }
-  return !previousSeparator;
-}
-
-interface InternalOperationEntry {
-  metadata: RegisteredOperationMetadata;
-  inputSchema?: AnySchema;
-  outputSchema?: AnySchema;
-  handler: (args: {
-    input: unknown;
-    ctx: OperationContext;
-    signal: AbortSignal;
-  }) => unknown | Promise<unknown>;
-  cache: Map<string, { value: unknown; expiresAtMs: number }>;
-}
-
-export type LifecycleHook = () => void | Promise<void>;
-
-export interface LampApp {
-  register<
-    InputSchema extends AnySchema | undefined = undefined,
-    OutputSchema extends AnySchema | undefined = undefined,
-  >(
-    operationId: string,
-    definition: OperationDefinition<InputSchema, OutputSchema>
-  ): LampApp;
-
-  invoke<Output = unknown, Input = unknown>(
-    operationId: string,
-    input?: Input,
-    options?: InvokeOptions
-  ): Promise<Output>;
-
-  start(): Promise<LampStartInfo>;
-  stop(): Promise<void>;
-  state(): LampAppState;
-  operations(): readonly RegisteredOperationMetadata[];
-  onStart(hook: LifecycleHook): LampApp;
-  onStop(hook: LifecycleHook): LampApp;
-}
-
-function normalizeCacheConfig(
-  cache: LampAppConfig["cache"]
-): Required<Pick<AppCacheConfig, "enabled" | "mode" | "defaultTtl" | "staleWhileRevalidate">> {
-  if (typeof cache === "boolean") {
-    return {
-      enabled: cache,
-      mode: cache ? "local" : "disabled",
-      defaultTtl: 60,
-      staleWhileRevalidate: false,
-    };
-  }
-  const enabled = cache?.enabled ?? (cache?.mode !== undefined && cache.mode !== "disabled");
-  return {
-    enabled,
-    mode: enabled ? (cache?.mode ?? "local") : "disabled",
-    defaultTtl: cache?.defaultTtl ?? 60,
-    staleWhileRevalidate: cache?.staleWhileRevalidate ?? false,
-  };
-}
-
-function normalizeOperationCache(
-  opCache: boolean | OperationCacheConfig | undefined,
-  appCache: ReturnType<typeof normalizeCacheConfig>
-): { enabled: boolean; ttlSeconds: number } {
-  if (opCache === false) {
-    return { enabled: false, ttlSeconds: 0 };
-  }
-  if (opCache === true) {
-    return {
-      enabled: appCache.enabled,
-      ttlSeconds: appCache.enabled ? appCache.defaultTtl : 0,
-    };
-  }
-  if (opCache === undefined) {
-    return { enabled: false, ttlSeconds: 0 };
-  }
-  const explicitlyDisabled = opCache.enabled === false || opCache.mode === "disabled";
-  if (explicitlyDisabled) {
-    return { enabled: false, ttlSeconds: 0 };
-  }
-  const ttl = opCache.ttl ?? appCache.defaultTtl;
-  if (ttl <= 0) {
-    return { enabled: false, ttlSeconds: 0 };
-  }
-  return {
-    enabled: appCache.enabled || opCache.enabled === true || opCache.ttl !== undefined,
-    ttlSeconds: ttl,
-  };
-}
-
-function normalizeOperationExecution(
-  opExec: OperationExecutionConfig | undefined,
-  defaultMode: ExecutionPolicy
-): Required<Pick<OperationExecutionConfig, "mode" | "concurrency" | "timeoutMs">> {
-  return {
-    mode: opExec?.mode ?? defaultMode,
-    concurrency: opExec?.concurrency ?? "concurrent",
-    timeoutMs: opExec?.timeoutMs ?? 30_000,
-  };
-}
-
-function normalizeOperationAuth(
-  opAuth: OperationAuthConfig | undefined,
-  securityConfig: AppSecurityConfig
-): RegisteredOperationMetadata["auth"] {
-  const defaultDeny = securityConfig.defaultDeny ?? false;
-  return {
-    allowAnonymous: opAuth?.allowAnonymous ?? !defaultDeny,
-    roles: [...(opAuth?.roles ?? [])],
-    scopes: [...(opAuth?.scopes ?? [])],
-    tenants: [...(opAuth?.tenants ?? [])],
-  };
-}
-
-function stableCacheKey(operationId: string, input: unknown): string {
-  return `${operationId}:${JSON.stringify(input ?? null)}`;
-}
-
-function enforceAuth(
-  policy: RegisteredOperationMetadata["auth"],
-  auth: PrincipalContext
-): void {
-  if (policy.allowAnonymous) {
-    return;
-  }
-  if (!auth.authenticated) {
-    throw new LampError("Authentication required for operation", {
-      code: "UNAUTHENTICATED",
-      identifier: "UNAUTHENTICATED",
+      if (entry && typeof entry === "object" && "fn" in entry) {
+        const spec = entry as LampParallelTaskSpec<unknown, unknown>;
+        return {
+          fn: typeof spec.fn === "function" ? spec.fn.toString() : String(spec.fn),
+          input: spec.input,
+        };
+      }
+      throw new LampError("ctx.parallel requires task specs or (items, mapper)", {
+        code: "INVALID_ARGUMENT",
+        identifier: "PARALLEL_INVALID_ARGS",
+      });
     });
   }
-  if (policy.tenants.length > 0 && (!auth.tenant || !policy.tenants.includes(auth.tenant))) {
-    throw new LampError("Principal tenant is not authorized", {
-      code: "PERMISSION_DENIED",
-      identifier: "TENANT_FORBIDDEN",
-    });
-  }
-  if (policy.roles.length > 0 && !policy.roles.some((r) => auth.roles.includes(r))) {
-    throw new LampError("Principal lacks required role", {
-      code: "PERMISSION_DENIED",
-      identifier: "ROLE_FORBIDDEN",
-    });
-  }
-  if (policy.scopes.length > 0 && !policy.scopes.every((s) => auth.scopes.includes(s))) {
-    throw new LampError("Principal lacks required scope", {
-      code: "PERMISSION_DENIED",
-      identifier: "SCOPE_FORBIDDEN",
-    });
-  }
-}
 
-export function createLampApp(config: LampAppConfig = {}): LampApp {
-  const transport: TransportPolicy = config.transport ?? "auto";
-  const serialization: SerializationPolicy = config.serialization ?? "protobuf";
-  const execution: ExecutionPolicy = config.execution ?? "adaptive";
-  const appCache = normalizeCacheConfig(config.cache);
-  const securityConfig: AppSecurityConfig = config.security ?? {};
-  const nativeBridge: NativeHostBridge | undefined = resolveNativeHostBridge(
-    config.nativeBridge
+  if (specs.length === 0) {
+    return [];
+  }
+
+  const nativeBridge = getNativeHostBridge();
+  if (nativeBridge && typeof nativeBridge.runParallel === "function") {
+    const nativePayloads = specs.map((sp) => ({
+      fn: sp.fn,
+      inputJson: JSON.stringify(sp.input ?? null),
+    }));
+    const rawResults = nativeBridge.runParallel(nativePayloads);
+    return rawResults.map((raw) => (raw.length > 0 ? JSON.parse(raw) : null));
+  }
+
+  return Promise.all(
+    specs.map(async (sp) => {
+      const compiled = new Function(`return (${sp.fn})`)() as (arg: unknown) => unknown;
+      return compiled(sp.input);
+    })
   );
+}
 
+/**
+ * Creates a new server-side {@link LampApp} operation registry and lifecycle controller.
+ *
+ * All network I/O, framing (`LMP1`/`LCB1`), dynamic thread scaling, and full-cycle response
+ * caching are executed exclusively by the native C++ runtime host (`lamp_server`).
+ *
+ * @param config - Server application configuration (caching defaults, TTL upper limit, workers, security).
+ * @returns Configured {@link LampApp} contract ready for `.register()` and `.start()`.
+ */
+export function createLampApp(config: LampAppConfig = {}): LampApp {
   let currentState: LampAppState = "created";
   let nextRequestId = 1;
-  const registry = new Map<string, InternalOperationEntry>();
+  const operationsMap = new Map<string, StoredOperation>();
   const startHooks: LifecycleHook[] = [];
   const stopHooks: LifecycleHook[] = [];
 
-  async function executeEntry(
-    entry: InternalOperationEntry,
+  const appCacheEnabled =
+    typeof config.cache === "boolean"
+      ? config.cache
+      : Boolean(
+          config.cache && (config.cache.enabled ?? config.cache.mode !== "disabled")
+        );
+
+  const maxTtlLimitSeconds =
+    typeof config.cache === "object" &&
+    config.cache &&
+    typeof config.cache.maxTtlLimitSeconds === "number" &&
+    config.cache.maxTtlLimitSeconds > 0
+      ? config.cache.maxTtlLimitSeconds
+      : DEFAULT_MAX_TTL_LIMIT_SECONDS;
+
+  const appDefaultTtl =
+    typeof config.cache === "object" &&
+    config.cache &&
+    typeof config.cache.defaultTtl === "number" &&
+    config.cache.defaultTtl > 0
+      ? Math.min(config.cache.defaultTtl, maxTtlLimitSeconds)
+      : Math.min(60, maxTtlLimitSeconds);
+
+  async function executeStoredOperation<TOutput>(
+    entry: StoredOperation,
     rawInput: unknown,
-    options: InvokeOptions = {}
-  ): Promise<unknown> {
-    const auth: PrincipalContext = {
-      authenticated: options.auth?.authenticated ?? false,
-      subject: options.auth?.subject,
-      tenant: options.auth?.tenant,
-      scheme: options.auth?.scheme,
-      roles: [...(options.auth?.roles ?? [])],
-      scopes: [...(options.auth?.scopes ?? [])],
-    };
-
-    enforceAuth(entry.metadata.auth, auth);
-
-    const validatedInput = validateSchema(entry.inputSchema, rawInput, "input");
-
-    if (entry.metadata.cache.enabled && !options.bypassCache) {
-      const key = stableCacheKey(entry.metadata.id, validatedInput);
-      const cached = entry.cache.get(key);
-      if (cached && cached.expiresAtMs > Date.now()) {
-        return cached.value;
-      }
-      if (cached) {
-        entry.cache.delete(key);
-      }
-    }
-
+    options: InvokeCallOptions = {}
+  ): Promise<TOutput> {
     const controller = new AbortController();
     const externalSignal = options.signal;
-    const onExternalAbort = (): void => {
-      controller.abort(new LampError("Operation was cancelled", {
-        code: "CANCELLED",
-        identifier: "OPERATION_CANCELLED",
-      }));
-    };
+    const onAbort = () => controller.abort(externalSignal?.reason);
 
-    if (externalSignal?.aborted) {
-      throw new LampError("Operation was cancelled", {
-        code: "CANCELLED",
-        identifier: "OPERATION_CANCELLED",
-      });
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort(externalSignal.reason);
+      } else {
+        externalSignal.addEventListener("abort", onAbort, { once: true });
+      }
     }
-    externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
-
-    const timeoutMs = options.timeoutMs ?? entry.metadata.execution.timeoutMs;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise =
-      timeoutMs > 0
-        ? new Promise<never>((_, reject) => {
-            timer = setTimeout(() => {
-              const err = new LampError("Operation deadline exceeded", {
-                code: "DEADLINE_EXCEEDED",
-                identifier: "DEADLINE_EXCEEDED",
-              });
-              controller.abort(err);
-              reject(err);
-            }, timeoutMs);
-          })
-        : undefined;
-
-    const abortPromise = new Promise<never>((_, reject) => {
-      controller.signal.addEventListener(
-        "abort",
-        () => {
-          const reason = controller.signal.reason;
-          if (reason instanceof LampError) {
-            reject(reason);
-          } else {
-            reject(
-              new LampError("Operation was cancelled", {
-                code: "CANCELLED",
-                identifier: "OPERATION_CANCELLED",
-              })
-            );
-          }
-        },
-        { once: true }
-      );
-    });
-
-    const ctx: OperationContext = {
-      requestId: nextRequestId++,
-      operationId: entry.metadata.id,
-      traceId: options.traceId,
-      spanId: options.spanId,
-      metadata: Object.freeze({ ...(options.metadata ?? {}) }),
-      signal: controller.signal,
-      auth: Object.freeze(auth),
-    };
 
     try {
-      const runPromise = Promise.resolve().then(() =>
-        entry.handler({
-          input: validatedInput,
-          ctx,
-          signal: controller.signal,
-        })
-      );
-
-      const racers: Promise<unknown>[] = [runPromise, abortPromise];
-      if (timeoutPromise) {
-        racers.push(timeoutPromise);
-      }
-
-      const rawOutput = await Promise.race(racers);
-      const validatedOutput = validateSchema(entry.outputSchema, rawOutput, "output");
-
-      if (entry.metadata.cache.enabled && !options.bypassCache) {
-        const key = stableCacheKey(entry.metadata.id, validatedInput);
-        entry.cache.set(key, {
-          value: validatedOutput,
-          expiresAtMs: Date.now() + entry.metadata.cache.ttlSeconds * 1000,
+      if (controller.signal.aborted) {
+        throw new LampError("Operation aborted before execution", {
+          code: "CANCELLED",
+          identifier: "REQUEST_ABORTED",
         });
       }
 
-      return validatedOutput;
+      const files = options.files ?? [];
+      const hydrated = hydrateFileReferences(rawInput, files);
+      const normalizedInput =
+        hydrated === null && entry.definition.input?.kind === "optional"
+          ? undefined
+          : hydrated;
+      const validatedInput = validateWithSchema(
+        entry.definition.input,
+        normalizedInput,
+        "input"
+      );
+
+      const meta = options.metadata ?? {};
+      const rolesRaw = meta["lamp.auth.roles"] ?? "";
+      const scopesRaw = meta["lamp.auth.scopes"] ?? "";
+
+      const ctx: OperationContext = {
+        requestId: nextRequestId++,
+        operationId: entry.meta.id,
+        metadata: meta,
+        files,
+        signal: controller.signal,
+        parallel: runParallelTasks as OperationContext["parallel"],
+        auth: {
+          authenticated: meta["lamp.auth.authenticated"] === "true",
+          subject: meta["lamp.auth.subject"],
+          tenant: meta["lamp.auth.tenant"],
+          scheme: meta["lamp.auth.scheme"],
+          roles: rolesRaw ? rolesRaw.split(",").filter(Boolean) : [],
+          scopes: scopesRaw ? scopesRaw.split(",").filter(Boolean) : [],
+        },
+      };
+
+      const rawOutput = await entry.definition.handler({
+        input: validatedInput,
+        ctx,
+        signal: controller.signal,
+      });
+
+      return validateWithSchema(
+        entry.definition.output,
+        rawOutput,
+        "output"
+      ) as TOutput;
     } catch (err) {
       throw normalizeLampError(err);
     } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onAbort);
       }
-      externalSignal?.removeEventListener("abort", onExternalAbort);
     }
   }
 
   const app: LampApp = {
     register(operationId, definition) {
-      if (currentState !== "created" && currentState !== "stopped") {
+      if (currentState !== "created") {
         throw new LampError(
-          `Cannot register operation "${operationId}" while app is ${currentState}`,
-          {
-            code: "FAILED_PRECONDITION",
-            identifier: "APP_ALREADY_STARTED",
-          }
+          `Cannot register "${operationId}" while application state is "${currentState}"`,
+          { code: "FAILED_PRECONDITION", identifier: "APP_ALREADY_STARTED" }
         );
       }
       if (!isValidOperationId(operationId)) {
-        throw new LampError(`Invalid Lamp operation identifier "${operationId}"`, {
+        throw new LampError(`Invalid operation ID "${operationId}"`, {
           code: "INVALID_ARGUMENT",
           identifier: "INVALID_OPERATION_ID",
         });
       }
-      if (registry.has(operationId)) {
-        throw new LampError(`Duplicate operation registration "${operationId}"`, {
+      if (operationsMap.has(operationId)) {
+        throw new LampError(`Duplicate operation "${operationId}"`, {
           code: "ALREADY_EXISTS",
-          identifier: "DUPLICATE_OPERATION_ID",
+          identifier: "DUPLICATE_OPERATION",
         });
       }
-      if (typeof definition?.handler !== "function") {
+      if (!definition || typeof definition.handler !== "function") {
         throw new LampError(`Operation "${operationId}" requires a handler function`, {
           code: "INVALID_ARGUMENT",
           identifier: "MISSING_HANDLER",
         });
       }
 
-      const metadata: RegisteredOperationMetadata = {
+      const rawTtl =
+        typeof definition.cache === "object" && definition.cache !== null
+          ? definition.cache.ttl
+          : definition.cache === true
+            ? appDefaultTtl
+            : 0;
+
+      const cacheEnabled =
+        definition.cache === false
+          ? false
+          : typeof definition.cache === "object"
+            ? (definition.cache.enabled ?? true) && rawTtl > 0
+            : definition.cache === true && appCacheEnabled && rawTtl > 0;
+
+      const clampedTtl = cacheEnabled ? Math.min(rawTtl, maxTtlLimitSeconds) : 0;
+
+      const meta: RegisteredOperationMetadata = {
         id: operationId,
         description: definition.description,
-        execution: normalizeOperationExecution(definition.execution, execution),
-        cache: normalizeOperationCache(definition.cache, appCache),
-        auth: normalizeOperationAuth(definition.auth, securityConfig),
+        execution: {
+          mode: definition.execution?.mode ?? config.execution ?? "parallel-dynamic",
+          concurrency: definition.execution?.concurrency ?? "concurrent",
+          timeoutMs: definition.execution?.timeoutMs ?? 30000,
+        },
+        cache: {
+          enabled: cacheEnabled,
+          ttlSeconds: clampedTtl,
+          maxTtlLimitSeconds,
+        },
+        auth: {
+          allowAnonymous:
+            definition.auth?.allowAnonymous ?? !(config.security?.defaultDeny ?? false),
+          roles: [...(definition.auth?.roles ?? [])],
+          scopes: [...(definition.auth?.scopes ?? [])],
+          tenants: [...(definition.auth?.tenants ?? [])],
+        },
         tags: [...(definition.tags ?? [])],
       };
 
-      const entry: InternalOperationEntry = {
-        metadata,
-        inputSchema: definition.input,
-        outputSchema: definition.output,
-        handler: definition.handler as InternalOperationEntry["handler"],
-        cache: new Map(),
-      };
+      const stored: StoredOperation = { meta, definition };
+      operationsMap.set(operationId, stored);
 
-      registry.set(operationId, entry);
-
-      if (nativeBridge) {
-        nativeBridge.registerOperation(
+      const bridge = getNativeHostBridge();
+      if (bridge && typeof bridge.registerOperation === "function") {
+        bridge.registerOperation(
           operationId,
-          metadata,
-          (rawJsonInput: string, metadataJson: string) => {
+          meta,
+          (rawInputJson, metadataJson) => {
             const parsedInput =
-              rawJsonInput && rawJsonInput.length > 0 ? JSON.parse(rawJsonInput) : undefined;
-            const parsedMeta: Record<string, string> =
-              metadataJson && metadataJson.length > 0
+              rawInputJson.length > 0 ? JSON.parse(rawInputJson) : undefined;
+            const parsedMeta =
+              metadataJson.length > 0
                 ? (JSON.parse(metadataJson) as Record<string, string>)
                 : {};
-            const roles = parsedMeta["lamp.auth.roles"]
-              ? parsedMeta["lamp.auth.roles"].split(",").filter(Boolean)
-              : [];
-            const scopes = parsedMeta["lamp.auth.scopes"]
-              ? parsedMeta["lamp.auth.scopes"].split(",").filter(Boolean)
-              : [];
-            return executeEntry(entry, parsedInput, {
+            return executeStoredOperation(stored, parsedInput, {
               metadata: parsedMeta,
-              auth: {
-                authenticated: parsedMeta["lamp.auth.authenticated"] === "true",
-                subject: parsedMeta["lamp.auth.subject"],
-                tenant: parsedMeta["lamp.auth.tenant"],
-                scheme: parsedMeta["lamp.auth.scheme"],
-                roles,
-                scopes,
-              },
             });
           }
         );
@@ -428,107 +322,88 @@ export function createLampApp(config: LampAppConfig = {}): LampApp {
       return app;
     },
 
-    async invoke<Output = unknown, Input = unknown>(
+    async start(): Promise<LampStartInfo> {
+      if (currentState === "running") {
+        return {
+          transport: config.transport ?? "lmp1-binary",
+          serialization: config.serialization ?? "lcb1",
+          execution: config.execution ?? "parallel-dynamic",
+          operations: Array.from(operationsMap.keys()),
+        };
+      }
+      if (currentState === "stopped") {
+        throw new LampError("Cannot restart an already stopped Lamp app", {
+          code: "FAILED_PRECONDITION",
+          identifier: "APP_ALREADY_STOPPED",
+        });
+      }
+
+      for (const hook of startHooks) {
+        await hook();
+      }
+      currentState = "running";
+
+      const info: LampStartInfo = {
+        transport: config.transport ?? "lmp1-binary",
+        serialization: config.serialization ?? "lcb1",
+        execution: config.execution ?? "parallel-dynamic",
+        operations: Array.from(operationsMap.keys()),
+      };
+
+      getNativeHostBridge()?.markStarted?.(JSON.stringify(info));
+      return info;
+    },
+
+    async invoke<TOutput = unknown>(
       operationId: string,
-      input?: Input,
-      options?: InvokeOptions
-    ): Promise<Output> {
+      input?: unknown,
+      options?: InvokeCallOptions
+    ): Promise<TOutput> {
       if (currentState !== "running") {
         throw new LampError(
           `Cannot invoke "${operationId}" when application state is "${currentState}"`,
-          {
-            code: "FAILED_PRECONDITION",
-            identifier: "APP_NOT_RUNNING",
-          }
+          { code: "FAILED_PRECONDITION", identifier: "APP_NOT_RUNNING" }
         );
       }
-      const entry = registry.get(operationId);
+      const entry = operationsMap.get(operationId);
       if (!entry) {
         throw new LampError(`Operation "${operationId}" is not registered`, {
           code: "NOT_FOUND",
           identifier: "OPERATION_NOT_FOUND",
         });
       }
-      const result = await executeEntry(entry, input, options);
-      return result as Output;
-    },
-
-    async start(): Promise<LampStartInfo> {
-      if (currentState === "running") {
-        return {
-          transport,
-          serialization,
-          execution,
-          operations: Array.from(registry.keys()),
-          nativeBacked: nativeBridge !== undefined,
-        };
-      }
-      if (currentState !== "created" && currentState !== "stopped") {
-        throw new LampError(`Cannot start app from state "${currentState}"`, {
-          code: "FAILED_PRECONDITION",
-          identifier: "INVALID_LIFECYCLE_STATE",
-        });
-      }
-      currentState = "starting";
-      try {
-        for (const hook of startHooks) {
-          await hook();
-        }
-        nativeBridge?.markStarted?.(
-          JSON.stringify({
-            transport,
-            serialization,
-            execution,
-            cache: appCache,
-          })
-        );
-        currentState = "running";
-        return {
-          transport,
-          serialization,
-          execution,
-          operations: Array.from(registry.keys()),
-          nativeBacked: nativeBridge !== undefined,
-        };
-      } catch (err) {
-        currentState = "stopped";
-        throw normalizeLampError(err);
-      }
+      return executeStoredOperation<TOutput>(entry, input, options);
     },
 
     async stop(): Promise<void> {
-      if (currentState === "stopped" || currentState === "created") {
+      if (currentState === "stopped") {
+        return;
+      }
+      if (currentState === "created") {
         currentState = "stopped";
         return;
       }
-      currentState = "stopping";
-      try {
-        for (const entry of registry.values()) {
-          entry.cache.clear();
-        }
-        for (let i = stopHooks.length - 1; i >= 0; i -= 1) {
-          await stopHooks[i]();
-        }
-        nativeBridge?.markStopped?.();
-      } finally {
-        currentState = "stopped";
+      for (let i = stopHooks.length - 1; i >= 0; i -= 1) {
+        await stopHooks[i]();
       }
+      currentState = "stopped";
+      getNativeHostBridge()?.markStopped?.();
     },
 
-    state(): LampAppState {
+    state() {
       return currentState;
     },
 
-    operations(): readonly RegisteredOperationMetadata[] {
-      return Array.from(registry.values(), (e) => e.metadata);
+    operations() {
+      return Array.from(operationsMap.values(), (entry) => entry.meta);
     },
 
-    onStart(hook: LifecycleHook): LampApp {
+    onStart(hook) {
       startHooks.push(hook);
       return app;
     },
 
-    onStop(hook: LifecycleHook): LampApp {
+    onStop(hook) {
       stopHooks.push(hook);
       return app;
     },

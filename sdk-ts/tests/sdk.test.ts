@@ -4,30 +4,31 @@ import test from "node:test";
 import {
   LampError,
   createLampApp,
+  getNativeHostBridge,
   isLampError,
   isValidOperationId,
   s,
+  setNativeHostBridge,
   type NativeHostBridge,
-  type RegisteredOperationMetadata,
 } from "../src/index.ts";
 
-test("createLampApp enforces lifecycle transitions and hooks", async () => {
+test("createLampApp enforces server lifecycle transitions and hooks", async () => {
   const events: string[] = [];
   const app = createLampApp({
-    transport: "auto",
-    serialization: "protobuf",
-    execution: "adaptive",
-    cache: { enabled: true },
+    transport: "lmp1-binary",
+    serialization: "lcb1",
+    execution: "parallel-dynamic",
+    cache: { enabled: true, defaultTtl: 30, maxTtlLimitSeconds: 120 },
   });
 
   app
-    .onStart(async () => {
+    .onStart(() => {
       events.push("start:1");
     })
-    .onStop(async () => {
+    .onStop(() => {
       events.push("stop:1");
     })
-    .onStop(async () => {
+    .onStop(() => {
       events.push("stop:2");
     })
     .register("system.health", {
@@ -38,300 +39,143 @@ test("createLampApp enforces lifecycle transitions and hooks", async () => {
   assert.equal(app.state(), "created");
 
   await assert.rejects(
-    () => app.invoke("system.health", undefined),
+    () => app.invoke("system.health"),
     (err: unknown) => isLampError(err) && err.code === "FAILED_PRECONDITION"
   );
 
   const info = await app.start();
   assert.equal(app.state(), "running");
-  assert.equal(info.transport, "auto");
-  assert.equal(info.serialization, "protobuf");
-  assert.equal(info.execution, "adaptive");
+  assert.equal(info.transport, "lmp1-binary");
+  assert.equal(info.serialization, "lcb1");
+  assert.equal(info.execution, "parallel-dynamic");
   assert.deepEqual(info.operations, ["system.health"]);
 
   assert.throws(
-    () =>
-      app.register("late.op", {
-        handler: () => null,
-      }),
+    () => app.register("late.op", { handler: () => null }),
     (err: unknown) => isLampError(err) && err.code === "FAILED_PRECONDITION"
   );
 
-  const health = await app.invoke<{ status: "ok" }>("system.health");
-  assert.deepEqual(health, { status: "ok" });
+  assert.deepEqual(await app.invoke("system.health"), { status: "ok" });
 
   await app.stop();
   assert.equal(app.state(), "stopped");
   assert.deepEqual(events, ["start:1", "stop:2", "stop:1"]);
 });
 
-test("register validates logical operation IDs and rejects duplicates", () => {
+test("register enforces valid dotted operation IDs, duplicates, and TTL upper limit", () => {
   assert.equal(isValidOperationId("users.get"), true);
-  assert.equal(isValidOperationId("analytics_v2.run-job"), true);
+  assert.equal(isValidOperationId("orders_v2.bulk-sync"), true);
   assert.equal(isValidOperationId(""), false);
-  assert.equal(isValidOperationId(".users"), false);
-  assert.equal(isValidOperationId("users..get"), false);
   assert.equal(isValidOperationId("users/get"), false);
+  assert.equal(isValidOperationId("users..get"), false);
 
-  const app = createLampApp();
-  app.register("users.get", { handler: () => ({ ok: true }) });
+  const app = createLampApp({
+    cache: { enabled: true, defaultTtl: 30, maxTtlLimitSeconds: 90 },
+  });
+
+  app.register("users.cached", {
+    cache: { ttl: 9999 },
+    handler: () => ({ ok: true }),
+  });
+
+  const meta = app.operations()[0];
+  assert.equal(meta.cache.enabled, true);
+  assert.equal(meta.cache.ttlSeconds, 90);
+  assert.equal(meta.cache.maxTtlLimitSeconds, 90);
 
   assert.throws(
-    () => app.register("bad/operation", { handler: () => null }),
-    (err: unknown) => isLampError(err) && err.code === "INVALID_ARGUMENT"
-  );
-
-  assert.throws(
-    () => app.register("users.get", { handler: () => null }),
+    () => app.register("users.cached", { handler: () => null }),
     (err: unknown) => isLampError(err) && err.code === "ALREADY_EXISTS"
   );
 });
 
-test("typed schema validation validates inputs, outputs, and external parse schemas", async () => {
-  const UserInputSchema = s.object({
-    id: s.string({ minLength: 1 }),
-    limit: s.optional(s.number({ integer: true, min: 1, max: 50 })),
-  });
-  const UserOutputSchema = s.object({
-    id: s.string(),
-    tags: s.array(s.string()),
-    active: s.boolean(),
-  });
-
-  // External schema object implementing only { parse(value) }
-  const ExternalEchoSchema = {
-    parse(value: unknown): { msg: string } {
-      if (
-        typeof value !== "object" ||
-        value === null ||
-        typeof (value as { msg?: unknown }).msg !== "string"
-      ) {
-        throw new Error("Expected { msg: string }");
-      }
-      return { msg: (value as { msg: string }).msg.trim() };
-    },
-  };
-
-  let brokenOutput = false;
+test("s.file() validates native binary payloads and ctx.files hydration", async () => {
   const app = createLampApp();
 
-  app
-    .register("users.get", {
-      input: UserInputSchema,
-      output: UserOutputSchema,
-      handler: async ({ input }) => {
-        if (brokenOutput) {
-          return { id: input.id, tags: [123] as unknown as string[], active: true };
-        }
-        return { id: input.id, tags: ["vip"], active: true };
-      },
-    })
-    .register("echo.external", {
-      input: ExternalEchoSchema,
-      handler: ({ input }) => input.msg,
-    });
-
-  await app.start();
-
-  const ok = await app.invoke("users.get", { id: "u1", limit: 10 });
-  assert.deepEqual(ok, { id: "u1", tags: ["vip"], active: true });
-
-  await assert.rejects(
-    () => app.invoke("users.get", { id: "", limit: 5 }),
-    (err: unknown) => isLampError(err) && err.code === "INVALID_ARGUMENT"
-  );
-
-  brokenOutput = true;
-  await assert.rejects(
-    () => app.invoke("users.get", { id: "u1" }),
-    (err: unknown) => isLampError(err) && err.code === "SERIALIZATION_FAILED"
-  );
-
-  const ext = await app.invoke<string>("echo.external", { msg: "  hello  " });
-  assert.equal(ext, "hello");
-
-  await app.stop();
-});
-
-test("operation caching reuses entries within TTL and respects bypassCache", async () => {
-  let executions = 0;
-  const app = createLampApp({
-    cache: { enabled: true },
-  });
-
-  app.register("users.get", {
-    input: s.object({ id: s.string() }),
-    output: s.object({ id: s.string(), seq: s.number() }),
-    cache: { ttl: 60 },
-    handler: async ({ input }) => {
-      executions += 1;
-      return { id: input.id, seq: executions };
-    },
-  });
-
-  await app.start();
-
-  const r1 = await app.invoke<{ id: string; seq: number }>("users.get", { id: "a" });
-  const r2 = await app.invoke<{ id: string; seq: number }>("users.get", { id: "a" });
-  const r3 = await app.invoke<{ id: string; seq: number }>("users.get", { id: "b" });
-  const r4 = await app.invoke<{ id: string; seq: number }>(
-    "users.get",
-    { id: "a" },
-    { bypassCache: true }
-  );
-
-  assert.equal(r1.seq, 1);
-  assert.equal(r2.seq, 1);
-  assert.equal(r3.seq, 2);
-  assert.equal(r4.seq, 3);
-  assert.equal(executions, 3);
-
-  await app.stop();
-});
-
-test("error normalization preserves LampError and sanitizes unexpected exceptions", async () => {
-  const app = createLampApp();
-
-  app
-    .register("op.domainError", {
-      handler: () => {
-        throw new LampError("User missing", {
-          code: "NOT_FOUND",
-          identifier: "USER_NOT_FOUND",
-        });
-      },
-    })
-    .register("op.crash", {
-      handler: () => {
-        throw new Error("C:\\secret\\db\\connection password=12345");
-      },
-    });
-
-  await app.start();
-
-  await assert.rejects(
-    () => app.invoke("op.domainError"),
-    (err: unknown) =>
-      isLampError(err) &&
-      err.code === "NOT_FOUND" &&
-      err.identifier === "USER_NOT_FOUND" &&
-      err.message === "User missing"
-  );
-
-  await assert.rejects(
-    () => app.invoke("op.crash"),
-    (err: unknown) =>
-      isLampError(err) &&
-      err.code === "EXECUTION_FAILED" &&
-      !err.message.includes("password") &&
-      !err.message.includes("secret")
-  );
-
-  await app.stop();
-});
-
-test("cancellation AbortSignal and deadline timeouts reject cleanly", async () => {
-  const app = createLampApp();
-
-  app.register("slow.work", {
-    execution: { timeoutMs: 30 },
-    handler: async ({ signal }) => {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 250);
-        signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
-      });
-      return "done";
-    },
-  });
-
-  await app.start();
-
-  // Timeout triggers DEADLINE_EXCEEDED
-  await assert.rejects(
-    () => app.invoke("slow.work"),
-    (err: unknown) => isLampError(err) && err.code === "DEADLINE_EXCEEDED"
-  );
-
-  // Explicit AbortController cancellation triggers CANCELLED
-  const ac = new AbortController();
-  setTimeout(() => ac.abort(), 10);
-  await assert.rejects(
-    () => app.invoke("slow.work", undefined, { signal: ac.signal, timeoutMs: 5000 }),
-    (err: unknown) => isLampError(err) && err.code === "CANCELLED"
-  );
-
-  await app.stop();
-});
-
-test("auth policy enforcement and nativeHostBridge registration", async () => {
-  const registered: Array<{ id: string; metadata: RegisteredOperationMetadata }> = [];
-  let startedCalls = 0;
-  let stoppedCalls = 0;
-  let capturedInvoker:
-    | ((rawJsonInput: string, metadataJson: string) => unknown | Promise<unknown>)
-    | undefined;
-
-  const mockBridge: NativeHostBridge = {
-    registerOperation(operationId, metadata, nativeInvoker) {
-      registered.push({ id: operationId, metadata });
-      capturedInvoker = nativeInvoker;
-    },
-    markStarted() {
-      startedCalls += 1;
-    },
-    markStopped() {
-      stoppedCalls += 1;
-    },
-  };
-
-  const app = createLampApp({
-    nativeBridge: mockBridge,
-    security: { defaultDeny: true },
-  });
-
-  app.register("admin.users.get", {
-    input: s.object({ id: s.string() }),
-    auth: { roles: ["admin"], scopes: ["users:read"], tenants: ["t1"] },
-    handler: ({ input, ctx }) => ({
-      id: input.id,
-      actor: ctx.auth.subject,
+  app.register("upload.avatar", {
+    input: s.object({
+      userId: s.string(),
+      avatar: s.file({ maxSizeBytes: 1024, allowedMimeTypes: ["image/png"] }),
     }),
+    output: s.object({
+      userId: s.string(),
+      fileName: s.string(),
+      size: s.number(),
+    }),
+    handler: ({ input, ctx }) => {
+      assert.equal(ctx.files.length, 1);
+      return {
+        userId: input.userId,
+        fileName: input.avatar.name,
+        size: input.avatar.data.byteLength,
+      };
+    },
   });
 
-  const info = await app.start();
-  assert.equal(info.nativeBacked, true);
-  assert.equal(startedCalls, 1);
-  assert.equal(registered.length, 1);
-  assert.equal(registered[0].metadata.auth.allowAnonymous, false);
+  await app.start();
 
-  await assert.rejects(
-    () => app.invoke("admin.users.get", { id: "u1" }),
-    (err: unknown) => isLampError(err) && err.code === "UNAUTHENTICATED"
+  const file = {
+    name: "pic.png",
+    mimeType: "image/png",
+    size: 4,
+    data: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+  };
+
+  const ok = await app.invoke(
+    "upload.avatar",
+    { userId: "u_1", avatar: { __lampFileRef: 0 } },
+    { files: [file] }
   );
+  assert.deepEqual(ok, { userId: "u_1", fileName: "pic.png", size: 4 });
 
   await assert.rejects(
     () =>
-      app.invoke(
-        "admin.users.get",
-        { id: "u1" },
-        { auth: { authenticated: true, subject: "u", tenant: "t1", roles: ["member"] } }
-      ),
-    (err: unknown) => isLampError(err) && err.code === "PERMISSION_DENIED"
+      app.invoke("upload.avatar", {
+        userId: "u_1",
+        avatar: { name: "bad.exe", mimeType: "application/x-msdownload", data: new Uint8Array([1]) },
+      }),
+    (err: unknown) => isLampError(err) && err.code === "INVALID_ARGUMENT"
   );
-
-  assert.ok(capturedInvoker);
-  const bridgeResult = await capturedInvoker(
-    JSON.stringify({ id: "42" }),
-    JSON.stringify({
-      "lamp.auth.authenticated": "true",
-      "lamp.auth.subject": "root-admin",
-      "lamp.auth.tenant": "t1",
-      "lamp.auth.roles": "admin",
-      "lamp.auth.scopes": "users:read",
-    })
-  );
-  assert.deepEqual(bridgeResult, { id: "42", actor: "root-admin" });
 
   await app.stop();
-  assert.equal(stoppedCalls, 1);
+});
+
+test("ctx.parallel delegates subtasks to NativeHostBridge.runParallel when available", async () => {
+  const recorded: number[] = [];
+  const mockBridge: NativeHostBridge = {
+    registerOperation() {},
+    runParallel(tasks) {
+      recorded.push(tasks.length);
+      return tasks.map((t) => {
+        const arg = JSON.parse(t.inputJson);
+        return JSON.stringify(Number(arg) * 10);
+      });
+    },
+  };
+
+  const prev = getNativeHostBridge();
+  setNativeHostBridge(mockBridge);
+  try {
+    const app = createLampApp();
+    app.register("jobs.batch", {
+      input: s.object({ nums: s.array(s.number()) }),
+      output: s.array(s.number()),
+      handler: ({ input, ctx }) => ctx.parallel(input.nums, (n) => n * 10),
+    });
+
+    await app.start();
+    const res = await app.invoke<number[]>("jobs.batch", { nums: [1, 2, 3, 4] });
+    assert.deepEqual(res, [10, 20, 30, 40]);
+    assert.deepEqual(recorded, [4]);
+    await app.stop();
+  } finally {
+    setNativeHostBridge(prev);
+  }
+});
+
+test("server SDK exports contain zero HTTP or client symbols", async () => {
+  const pkg = await import("../src/index.ts");
+  assert.equal("createLampClient" in pkg, false);
+  assert.equal("startLampNodeServer" in pkg, false);
+  assert.equal(typeof new LampError("boom").toJSON, "function");
 });

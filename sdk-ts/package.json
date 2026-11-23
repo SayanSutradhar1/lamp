@@ -1,7 +1,7 @@
 {
   "name": "lamp",
-  "version": "0.1.0",
-  "description": "TypeScript application SDK for the Lamp native backend runtime",
+  "version": "0.2.0",
+  "description": "Server-side contract SDK for the Lamp native C++ binary backend runtime (use lamp-client for client contracts)",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
@@ -10,6 +10,9 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     }
+  },
+  "bin": {
+    "lamp": "./bin/lamp.ts"
   },
   "scripts": {
     "test": "node --test tests/sdk.test.ts",
@@ -21,8 +24,8 @@
   "keywords": [
     "lamp",
     "backend",
-    "operations",
+    "server-contracts",
     "v8",
-    "rpc"
+    "binary-rpc"
   ]
 }

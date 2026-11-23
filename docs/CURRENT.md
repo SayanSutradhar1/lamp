@@ -1,46 +1,27 @@
 # Lamp — Current Development State
 
-**As of:** 2026-11-22, verified directly in `D:\Projects\lamp` via MSVC CMake/Ninja build and CTest.
+**As of:** 2026-11-23, verified directly in `D:\Projects\lamp` via MSVC CMake/Ninja build, CTest, and Node 24 TypeScript runs.
 
 ## Verified baseline
 - Project: `D:\Projects\lamp`
 - Platform: Windows AMD64; MSVC Visual Studio 2026 Build Tools (`v14.52`).
 - C++20, CMake + Ninja, `build-msvc-v8`, Release.
 - V8 enabled (`ON`), native tasks enabled (`ON`), L2 cache disabled (`OFF`).
-- **Latest full CTest: 44/44 suites passed, exit code 0, 9.68 seconds.**
-- **Latest TypeScript SDK (`sdk-ts`) tests: 7/7 passed (`node --test sdk-ts/tests/sdk.test.ts`, exit code 0, 207.9ms).**
-- **Latest benchmark build & run (`LAMP_BUILD_BENCHMARKS=ON`): `lamp_runtime_benchmark.exe` exited 0 across 7 micro-benchmarks.**
-- **Phases 1 – 12 are complete and verified for the current repository scope.**
+- **Latest full CTest: 47/47 suites passed, exit code 0, 13.66 seconds.**
+- **Server-only SDK (`sdk-ts`, `"name": "lamp"`):** **5/5 passed** (`node --test sdk-ts/tests/sdk.test.ts`, exit code 0).
+- **Client SDK (`client-ts`, `"name": "lamp-client"`):** **2/2 passed** (`node --test client-ts/tests/client_binary.test.ts`, exit code 0; live Node TCP `lmp://` and Browser WebSocket `ws://` `LMP1`+`LCB1` E2E against `lamp_server.exe`).
+- **Pure-binary C++ server vs HTTP REST (`lamp_transport_test`):** **4/4 passed** — **`4.59x` faster roundtrip** and **`2.62x` less bandwidth** (small message `203B -> 94B`, **`2.16x` smaller**).
 
-## Latest verified changes (Phase 12 — Production Readiness and v1.0)
-- **`runtime/telemetry/` (`lamp::telemetry`):**
-  - `metrics_registry.hpp`: Thread-safe atomic `Counter` / `Gauge`, `Histogram` with percentile estimation, cardinality-bounded `MetricsRegistry` (`max_series`), Prometheus text & JSON snapshot renderers.
-  - `tracing.hpp`: W3C `traceparent` parser (`ParseTraceparent`) & formatter, `SpanContext`, bounded `InMemorySpanExporter`, `Tracer`, and RAII `SpanScope`.
-  - `health_check.hpp`: Liveness/readiness `HealthRegistry`, JSON `HealthReport`, and HTTP route handlers (`MakeLivenessHttpHandler`, `MakeReadinessHttpHandler`, `MakePrometheusMetricsHttpHandler`).
-  - `telemetry_dispatcher.hpp`: `TelemetryDispatcher` decorating `bridge::ExecutionDispatcher` with `lamp_operations_in_flight`, `lamp_operations_total`, `lamp_operation_duration_ms`, `lamp_operation_cache_hits_total`, and W3C trace/span propagation.
-  - `CMakeLists.txt` & `tests/telemetry_test.cpp` (`lamp_telemetry_test`): **4/4** tests passed (metrics cardinality, W3C tracing & span bounds, `/healthz`/`/readyz`/`/metrics` endpoints, and concurrent `TelemetryDispatcher` + cache execution).
-- **`benchmarks/` (`LAMP_BUILD_BENCHMARKS=ON` in `CMakeLists.txt`):**
-  - `lamp_runtime_benchmark.cpp` wired into CMake and verified in MSVC Release (`http_parse_and_route`, `bridge_dispatch_native_uncached`, `bridge_dispatch_local_cache_hit`, `telemetry_dispatch_cached`, `security_hmac_token_verify`, `security_token_bucket_acquire`, `streaming_channel_push_pop`).
-- **CI & Production Documentation:**
-  - `.github/workflows/ci.yml`: GitHub Actions CI covering Ubuntu + Windows C++20 builds/CTest/benchmarks and Node 24 TypeScript SDK verification.
-  - `docs/PRODUCTION.md`: Production build, SDK, security, observability (`/healthz`, `/readyz`, `/metrics`), and release verification guide.
-
-## What works
-- All 12 roadmap phases implemented and verified: core runtime (8 suites), HTTP engine + async nonblocking `HttpAsyncServer` (11 `http`-labeled suites), embedded V8 runtime (8 `v8` unit suites), operation bridge + V8 SDK host bridge (5 `bridge`-labeled suites), async execution engine (`NativeWorkerPool`, `V8IsolateWorkerPool`, `AsyncExecutionDispatcher`), Phase 7 serialization (`lamp_serialization_test`), Phase 8 operation caching (`lamp_cache_test`), Phase 9 streaming/real-time (`lamp_streaming_test`), Phase 10 security/reliability (`lamp_security_test`), Phase 11 TypeScript SDK (`sdk-ts/` + `lamp_v8_sdk_host_bridge`), and Phase 12 telemetry/observability + benchmarks + CI (`lamp_telemetry_test`, `lamp_runtime_benchmark`).
-
-## Immediate next actions (Post-Phase 12 / Maintenance)
-- Run optional multi-OS GitHub Actions checks when pushed to remote git hosting, and maintain regression coverage across future SDK/runtime extensions.
+## Latest verified changes (Binary Architecture & Split SDKs)
+- **Pure C++ Non-REST Runtime Host (`host/` + `runtime/transport/` + `runtime/core/`):**
+  - `runtime/transport/lamp_binary_protocol.hpp`: 14-byte `LMP1` multiplexed binary frames + `LCB1` string-deduplicated compact binary codec with raw binary file attachments (`LampFilePayload`, zero base64) + RFC 6455 binary WebSocket upgrade for browser `LMP1` clients. Rejects HTTP REST calls (`404`).
+  - `runtime/transport/async_binary_converter.hpp`: `AsyncBinaryStreamConverter` asynchronously streaming JSON + file inputs into binary `LCB1` chunks on `DynamicWorkerPool` -> bounded `StreamChannel`.
+  - `runtime/transport/wire_cache.hpp`: `FullCycleWireCache` caching entire serialized binary responses by `(operation_id, Sha256(raw_request_payload))` with configurable TTL clamped by hard `max_ttl_limit`.
+  - `runtime/transport/lamp_binary_server.hpp` & `host/lamp_app_server.hpp`: Nonblocking `WSAPoll`/`poll` TCP server (`TCP_NODELAY`) + C++ `DynamicWorkerPool` (`min_threads..max_threads` dynamic scaling) + full-cycle wire cache + `LampV8RuntimeScheduler` (`s.file()` raw `Uint8Array` hydration and `ctx.parallel` subtask splitting via `V8SubtaskIsolatePool` on `DynamicWorkerPool`).
+- **Split JSDoc-documented SDK Packages:**
+  - `sdk-ts/` (`"name": "lamp"`): Server-side contracts ONLY (`createLampApp`, `s` + `s.file()`, `LampError`, `ctx.parallel`, TTL upper-limit config, `lamp serve` CLI).
+  - `client-ts/` (`"name": "lamp-client"`): Dedicated client contracts over `LMP1`/`LCB1` (`node` raw TCP + `browser` binary WebSocket + async streaming JSON/file converter).
 
 ## Known notes / deferred items
-- `HttpServer` (`runtime/http/http_server.hpp/.cpp`) remains the blocking per-connection-thread server alongside `HttpAsyncServer` (`runtime/http/http_async_server.hpp/.cpp`).
-- Pre-existing root scratch files (`lamp_phase6_*`, `*.obj`, `*.exe`) were inspected and removed; `CMakeLists.txt` is the only file in the repository root.
-
-## Working agreement for an autonomous coding agent
-- Read files and run commands directly; avoid manual copy/paste.
-- Keep changes scoped and explain them.
-- Run relevant tests and report exact output/exit codes.
-- Never fabricate test results or implemented capabilities.
-- Do not delete untracked root files without inspecting them.
-- Update `CURRENT.md`, `PHASE.md`, `TESTS.md`, and `ROADMAP.md` at the end of each work unit with verified results.
-- Store manual compile artifacts in `build-msvc-v8/manual-tests/`.
-- Preserve `createLampApp` as the intended TypeScript factory.
+- Sample external consumer `D:\Projects\lamp-test-client` was updated to `lamp-client/browser` (`ws://` binary WebSocket) and verified (`tsc --noEmit && vite build`).
+- Sample Node/MongoDB project `D:\Projects\lamp-test-project` uses Mongoose (`mongoose` npm package, which depends on Node core `net`/`tls` sockets) and therefore remains on its prior Node setup unless native MongoDB bindings are added to the C++ host.

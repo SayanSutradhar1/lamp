@@ -9,19 +9,18 @@ Applications declare typed logical operations (`users.get`, `orders.create`, etc
 ## Architecture Overview
 
 ```text
-TypeScript SDK (sdk-ts: createLampApp / app.register / schemas)
-                         |
-                 V8 SDK Host Bridge
-            (runtime/bridge/v8_sdk_host_bridge.hpp)
-                         |
-        ExecutionDispatcher + OperationRegistry
-         /        |         |        |        \
-   Security   Cache   Serialization  Async    Telemetry
-(401/403/429) (L1/L2)  (Protobuf/JSON) Pool   (Metrics/Traces)
-                         |
-         HTTP Engine & Async Server (HttpAsyncServer)
-                         |
-                   Chunked / SSE Streaming
+TypeScript Server SDK (sdk-ts / "lamp": createLampApp / app.register / s.file() / ctx.parallel)
+                                  |
+                         Native V8 Host Bridge
+                 (host/lamp_v8_scheduler.hpp + V8SubtaskIsolatePool)
+                                  |
+                 Core DynamicWorkerPool & FullCycleWireCache
+            (Elastic thread scaling + full response cache w/ TTL cap)
+                                  |
+              Pure-Binary Non-REST Server (LampBinaryServer)
+          (LMP1 14B frame + LCB1 string-interned compact binary & WebSocket)
+                                  |
+           Client SDK (client-ts / "lamp-client": Node TCP & Browser WS)
 ```
 
 ### Runtime Modules (`runtime/`)
@@ -65,38 +64,54 @@ Run the Release runtime micro-benchmarks (`benchmarks/lamp_runtime_benchmark.cpp
 .\build-msvc-v8\benchmarks\lamp_runtime_benchmark.exe
 ```
 
-### 2. TypeScript SDK (`sdk-ts/`)
+### 2. Run a Pure-Binary Non-REST Backend & `lamp-client`
+
+Write server contracts in TypeScript (`sdk-ts/examples/live_backend.ts` — package `lamp`):
 
 ```ts
-import { createLampApp, s } from "./sdk-ts/src/index.ts";
+import { LampError, createLampApp, s } from "lamp";
 
 const app = createLampApp({
-  transport: "auto",
-  serialization: "protobuf",
-  execution: "adaptive",
-  cache: { enabled: true },
+  transport: "lmp1-binary",
+  serialization: "lcb1",
+  execution: "parallel-dynamic",
+  cache: { enabled: true, defaultTtl: 60, maxTtlLimitSeconds: 300 },
 });
 
 app.register("users.get", {
   input: s.object({ id: s.string({ minLength: 1 }) }),
-  output: s.object({ id: s.string(), name: s.string() }),
+  output: s.object({ id: s.string(), name: s.string(), role: s.enum(["member", "admin"]) }),
   cache: { ttl: 60 },
   handler: async ({ input }) => ({
     id: input.id,
     name: `User ${input.id}`,
+    role: input.id === "1" ? "admin" : "member",
   }),
 });
 
 await app.start();
-const user = await app.invoke("users.get", { id: "1" });
-await app.stop();
 ```
 
-Run the SDK tests and canonical example (Node >= 22.18 / 24):
+Launch the pure C++20 `lamp_server` runtime:
+
+```powershell
+node .\sdk-ts\bin\lamp.ts serve .\sdk-ts\examples\live_backend.ts --port 3000
+```
+
+Call operations from Node or Browsers via **`lamp-client`** (`lmp://` TCP or `ws://` binary WebSocket — zero REST endpoints):
+
+```ts
+import { createLampClient } from "lamp-client"; // or "lamp-client/browser" in Vite/React
+
+const client = createLampClient({ url: "lmp://127.0.0.1:3000" });
+const user = await client.call("users.get", { id: "1" });
+```
+
+Run server and client verification suites (Node >= 22.18 / 24):
 
 ```powershell
 node --test sdk-ts/tests/sdk.test.ts
-node sdk-ts/examples/users_service.ts
+node --test client-ts/tests/client_binary.test.ts
 ```
 
 ---
@@ -109,8 +124,10 @@ lamp/
 ├── .github/workflows/ci.yml # Linux + Windows CI workflow
 ├── benchmarks/              # Release micro-benchmarks (LAMP_BUILD_BENCHMARKS=ON)
 ├── docs/                    # Architecture, interface spec, roadmap & phase tracking
-├── runtime/                 # Modular C++20 runtime & CTest suites
-└── sdk-ts/                  # Operation-oriented TypeScript SDK (createLampApp)
+├── host/                    # Native C++ binary server (`lamp_server`, `LampBinaryServer`)
+├── runtime/                 # Modular C++20 runtime (`core`, `transport`, `v8`, etc.)
+├── sdk-ts/                  # Server-side contract SDK (`lamp`: `createLampApp`, `s`, `lamp` CLI)
+└── client-ts/               # Client-side binary SDK (`lamp-client` Node TCP & Browser WS)
 ```
 
 ---
@@ -127,6 +144,7 @@ lamp/
 
 ## Verified Baseline
 
-- **C++20 CTest:** **44/44** suites passed (`100%`, MSVC x64 Release, V8 enabled, `9.29 sec`)
-- **TypeScript SDK (`sdk-ts`):** **7/7** tests passed (`node --test sdk-ts/tests/sdk.test.ts`)
-- **Benchmarks (`lamp_runtime_benchmark.exe`):** 7 Release micro-benchmarks verified (`exit code 0`)
+- **C++20 CTest:** **47/47** suites passed (`100%`, MSVC x64 Release, V8 enabled, `13.66s`)
+- **Transport vs REST (`lamp_transport_test`):** **4/4** passed (**`4.59x` faster** and **`2.62x` less bandwidth**; `2.16x` smaller small payloads)
+- **Server SDK (`sdk-ts` / `lamp`):** **5/5** tests passed (`node --test sdk-ts/tests/sdk.test.ts`)
+- **Client SDK (`client-ts` / `lamp-client`):** **2/2** live binary E2E tests passed (`node --test client-ts/tests/client_binary.test.ts`)
