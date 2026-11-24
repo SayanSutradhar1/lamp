@@ -87,6 +87,47 @@ export interface LampWorkerPoolConfig {
 }
 
 /**
+ * Function passed into `allowOrigin(expose, callback)` to register allowed origin URLs.
+ */
+export type OriginExposeFn = (origins: readonly string[]) => void;
+
+/**
+ * Callback invoked when origin configuration is applied.
+ */
+export type OriginConfiguredCallback = (origins?: readonly string[]) => void;
+
+/**
+ * Custom origin allowance resolver function.
+ *
+ * @param expose - Registers the array of allowed origin strings.
+ * @param callback - Invoked when origin configuration is completed.
+ * @returns `true` to enable the configured origins, or `false` to deny cross-origin requests (CORS error).
+ */
+export type AllowOriginResolver = (
+  expose: OriginExposeFn,
+  callback: OriginConfiguredCallback
+) => boolean;
+
+/**
+ * Origin allowance configuration option on {@link LampAppConfig}.
+ *
+ * - `false` (default): cross-origin requests are denied with a CORS error.
+ * - `true`: any origin is allowed to communicate with the Lamp application.
+ * - `(expose, callback) => boolean`: configures specific origins via `expose([...])`
+ *   and invokes `callback` when configured; returning `true` enables those origins,
+ *   while returning `false` denies cross-origin requests with a CORS error.
+ */
+export type LampAllowOriginConfig = boolean | AllowOriginResolver;
+
+/**
+ * Normalized origin allowance policy enforced by the C++ runtime.
+ */
+export interface LampOriginPolicy {
+  readonly mode: "deny_all" | "allow_all" | "allow_list";
+  readonly origins: readonly string[];
+}
+
+/**
  * Top-level configuration passed to `createLampApp`.
  */
 export interface LampAppConfig {
@@ -102,6 +143,8 @@ export interface LampAppConfig {
   readonly workers?: LampWorkerPoolConfig;
   /** Server security policies enforced before dispatching handlers. */
   readonly security?: LampSecurityConfig;
+  /** Cross-origin allowance policy (`false` by default; `true` allows all; or `(expose, callback) => boolean`). */
+  readonly allowOrigin?: LampAllowOriginConfig;
 }
 
 /**
@@ -356,6 +399,12 @@ export interface LampApp {
 
   /** Returns normalized metadata snapshots for all registered operations. */
   operations(): readonly RegisteredOperationMetadata[];
+
+  /** Returns the resolved origin allowance policy for this application. */
+  originPolicy(): LampOriginPolicy;
+
+  /** Evaluates whether the given origin string is permitted under the active policy. */
+  isOriginAllowed(origin: string): boolean;
 
   /**
    * Registers a hook executed during `start()` in FIFO order.

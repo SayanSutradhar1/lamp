@@ -30,13 +30,16 @@ export type {
   StringSchemaOptions,
 } from "./schema.ts";
 export type {
+  AllowOriginResolver,
   InvokeCallOptions,
+  LampAllowOriginConfig,
   LampApp,
   LampAppCacheConfig,
   LampAppConfig,
   LampAppState,
   LampExecutionMode,
   LampFile,
+  LampOriginPolicy,
   LampParallelTaskSpec,
   LampSecurityConfig,
   LampSerializationMode,
@@ -53,5 +56,7 @@ export type {
   OperationExecutionConfig,
   OperationHandler,
   OperationHandlerArgs,
+  OriginConfiguredCallback,
+  OriginExposeFn,
   RegisteredOperationMetadata,
 } from "./types.ts";

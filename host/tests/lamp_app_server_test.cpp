@@ -335,6 +335,128 @@ app.start();
     server.Shutdown();
     EXPECT(!server.IsRunning());
 
+    // 3. Origin allowance / CORS enforcement via createLampApp({ allowOrigin })
+    {
+        auto sendWsUpgrade = [](std::uint16_t port, const std::string& origin) {
+            std::string req =
+                "GET / HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                "Sec-WebSocket-Version: 13\r\n";
+            if (!origin.empty()) {
+                req += "Origin: " + origin + "\r\n";
+            }
+            req += "\r\n";
+            NativeSocket s = ConnectTcp("127.0.0.1", port);
+            SendAll(s, reinterpret_cast<const std::uint8_t*>(req.data()), req.size());
+            std::string resp;
+            char buf[4096];
+            // Read first chunk (101 stays open, 403 closes)
+            const int n = ::recv(s, buf, sizeof(buf), 0);
+            if (n > 0) {
+                resp.append(buf, static_cast<std::size_t>(n));
+            }
+            CloseSocket(s);
+            return resp;
+        };
+
+        // 3a. Default (allowOrigin omitted / false) -> CORS 403 error
+        {
+            LampAppServerConfig c;
+            c.host = "127.0.0.1";
+            c.port = 0;
+            c.entry_name = "origin-default.js";
+            c.entry_source = "const app = createLampApp(); app.start();";
+            LampAppServer srv(std::move(c));
+            srv.Start();
+
+            const std::string resp = sendWsUpgrade(srv.Port(), "https://external.example.com");
+            EXPECT(resp.find("403 Forbidden") != std::string::npos);
+            EXPECT(resp.find("CORS_ORIGIN_DENIED") != std::string::npos);
+            srv.Shutdown();
+        }
+
+        // 3b. allowOrigin: true -> allowed for all origins
+        {
+            LampAppServerConfig c;
+            c.host = "127.0.0.1";
+            c.port = 0;
+            c.entry_name = "origin-true.js";
+            c.entry_source = "const app = createLampApp({ allowOrigin: true }); app.start();";
+            LampAppServer srv(std::move(c));
+            srv.Start();
+
+            const std::string resp = sendWsUpgrade(srv.Port(), "https://any-client.example.org");
+            EXPECT(resp.find("101 Switching Protocols") != std::string::npos);
+            EXPECT(resp.find("Access-Control-Allow-Origin: *") != std::string::npos);
+            srv.Shutdown();
+        }
+
+        // 3c. allowOrigin: (expose, callback) => { expose([...]); callback(); return true; }
+        {
+            LampAppServerConfig c;
+            c.host = "127.0.0.1";
+            c.port = 0;
+            c.entry_name = "origin-list.js";
+            c.entry_source = R"JS(
+                const app = createLampApp({
+                  allowOrigin: (expose, callback) => {
+                    expose(["https://allowed.example.com"]);
+                    callback();
+                    return true;
+                  },
+                });
+                app.start();
+            )JS";
+            LampAppServer srv(std::move(c));
+            srv.Start();
+
+            const std::string ok_resp = sendWsUpgrade(srv.Port(), "https://allowed.example.com");
+            EXPECT(ok_resp.find("101 Switching Protocols") != std::string::npos);
+            EXPECT(ok_resp.find("Access-Control-Allow-Origin: https://allowed.example.com") != std::string::npos);
+
+            const std::string bad_resp = sendWsUpgrade(srv.Port(), "https://blocked.example.com");
+            EXPECT(bad_resp.find("403 Forbidden") != std::string::npos);
+            EXPECT(bad_resp.find("CORS_ORIGIN_DENIED") != std::string::npos);
+
+            const std::string preflight_ok = SendHttpRawAndClose(
+                "127.0.0.1",
+                srv.Port(),
+                "OPTIONS / HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://allowed.example.com\r\n\r\n"
+            );
+            EXPECT(preflight_ok.find("204 No Content") != std::string::npos);
+            EXPECT(preflight_ok.find("Access-Control-Allow-Origin: https://allowed.example.com") != std::string::npos);
+            srv.Shutdown();
+        }
+
+        // 3d. allowOrigin: (expose, callback) => { expose([...]); return false; } -> CORS error
+        {
+            LampAppServerConfig c;
+            c.host = "127.0.0.1";
+            c.port = 0;
+            c.entry_name = "origin-false-fn.js";
+            c.entry_source = R"JS(
+                const app = createLampApp({
+                  allowOrigin: (expose, callback) => {
+                    expose(["https://allowed.example.com"]);
+                    callback();
+                    return false;
+                  },
+                });
+                app.start();
+            )JS";
+            LampAppServer srv(std::move(c));
+            srv.Start();
+
+            const std::string resp = sendWsUpgrade(srv.Port(), "https://allowed.example.com");
+            EXPECT(resp.find("403 Forbidden") != std::string::npos);
+            EXPECT(resp.find("CORS_ORIGIN_DENIED") != std::string::npos);
+            srv.Shutdown();
+        }
+    }
+
     if (g_failed == 0) {
         std::cout << "Lamp binary host app server test passed\n";
     } else {

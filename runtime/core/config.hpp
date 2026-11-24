@@ -1,6 +1,8 @@
 
 #pragma once
 
+#include "core/origin_policy.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -212,6 +214,7 @@ struct LampConfig {
     StreamingConfig streaming;
     ResourceConfig resources;
     LoggingConfig logging;
+    OriginAllowanceConfig originAllowance;
 
     // --------------------------------------------------------
     // Hardware Detection
@@ -414,6 +417,17 @@ struct LampConfig {
             errors.emplace_back(
                 "Graceful shutdown timeout must be positive."
             );
+        }
+
+        if (originAllowance.mode == OriginAllowanceMode::AllowList) {
+            for (const auto& origin : originAllowance.allowedOrigins) {
+                if (!OriginAllowancePolicy::isValidOriginEntry(origin)) {
+                    errors.emplace_back(
+                        "Allowed origin entry cannot be empty or contain control characters."
+                    );
+                    break;
+                }
+            }
         }
 
         return errors;

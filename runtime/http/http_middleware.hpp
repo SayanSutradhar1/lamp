@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include "core/origin_policy.hpp"
 #include "http/http_router.hpp"
 
 #include <atomic>
@@ -172,6 +173,54 @@ inline HttpRouteHandler ComposeHttpMiddleware(
     return HttpMiddlewareChain(
         std::move(middleware)
     ).compose(std::move(terminal));
+}
+
+[[nodiscard]]
+inline HttpMiddleware MakeOriginAllowanceMiddleware(
+    std::shared_ptr<core::OriginAllowancePolicy> policy
+) {
+    return [policy = std::move(policy)](
+        const HttpRequest& request,
+        const HttpRouteContext& context,
+        const HttpMiddlewareNext& next
+    ) -> HttpResponse {
+        if (!policy) {
+            return next(request, context);
+        }
+
+        const auto originHeader = request.header("Origin");
+        const auto eval = policy->evaluate(originHeader);
+        if (!eval.allowed) {
+            HttpResponse denied;
+            denied.setStatus(HttpStatus::Forbidden);
+            denied.setHeader("Content-Type", "application/json");
+            denied.setHeader("X-Lamp-Cors-Error", eval.errorCode);
+            denied.setBody(
+                "{\"error\":true,\"code\":\"PERMISSION_DENIED\",\"identifier\":\"" +
+                eval.errorCode + "\",\"message\":\"" + eval.errorMessage + "\"}"
+            );
+            return denied;
+        }
+
+        if (request.method() == HttpMethod::Options && originHeader.has_value()) {
+            HttpResponse preflight;
+            preflight.setStatus(HttpStatus::NoContent);
+            if (!eval.accessControlAllowOrigin.empty()) {
+                preflight.setHeader("Access-Control-Allow-Origin", eval.accessControlAllowOrigin);
+                preflight.setHeader("Vary", "Origin");
+            }
+            preflight.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+            preflight.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            return preflight;
+        }
+
+        HttpResponse response = next(request, context);
+        if (!eval.accessControlAllowOrigin.empty()) {
+            response.setHeader("Access-Control-Allow-Origin", eval.accessControlAllowOrigin);
+            response.setHeader("Vary", "Origin");
+        }
+        return response;
+    };
 }
 
 } // namespace lamp::http

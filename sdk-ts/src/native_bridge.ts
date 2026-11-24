@@ -49,6 +49,13 @@ export interface NativeHostBridge {
    * Notifies the native host that application shutdown hooks completed.
    */
   markStopped?(): void;
+
+  /**
+   * Configures the C++ runtime's origin allowance / CORS policy.
+   *
+   * @param policyJson - JSON-encoded {@link LampOriginPolicy}.
+   */
+  configureOriginAllowance?(policyJson: string): void;
 }
 
 declare global {

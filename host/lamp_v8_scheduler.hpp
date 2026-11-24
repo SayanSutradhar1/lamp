@@ -24,6 +24,7 @@
 #include "bridge/v8_sdk_host_bridge.hpp"
 #include "cache/local_operation_cache.hpp"
 #include "core/dynamic_worker_pool.hpp"
+#include "core/origin_policy.hpp"
 #include "execution/async_execution_contract.hpp"
 #include "serialization/serialization_value.hpp"
 #include "telemetry/telemetry_dispatcher.hpp"
@@ -460,6 +461,31 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
       typeof config.cache === "object" && config.cache && config.cache.defaultTtl
         ? config.cache.defaultTtl
         : 60;
+
+    let originPolicy = { mode: "deny_all", origins: [] };
+    if (config.allowOrigin === true) {
+      originPolicy = { mode: "allow_all", origins: [] };
+    } else if (typeof config.allowOrigin === "function") {
+      let configuredOrigins = [];
+      const callback = () => {};
+      const expose = (origins) => {
+        if (!Array.isArray(origins)) {
+          throw new LampError("allowOrigin expose() requires an array of origin strings", {
+            code: "INVALID_ARGUMENT",
+            identifier: "INVALID_ORIGIN_CONFIG",
+          });
+        }
+        configuredOrigins = origins
+          .map((item) => (typeof item === "string" ? item.trim() : ""))
+          .filter((item) => item.length > 0);
+        callback(configuredOrigins);
+      };
+      const allowed = Boolean(config.allowOrigin(expose, callback));
+      if (allowed) {
+        originPolicy = { mode: "allow_list", origins: configuredOrigins };
+      }
+    }
+    globalThis.__lampNativeBridge?.configureOriginAllowance?.(JSON.stringify(originPolicy));
 
     const app = {
       register(operationId, definition) {
@@ -944,6 +970,7 @@ struct LampV8SchedulerConfig final {
     std::size_t max_pending_tasks = 4096;
     std::size_t max_parallel_isolates = 16;
     std::shared_ptr<core::DynamicWorkerPool> worker_pool;
+    std::shared_ptr<core::OriginAllowancePolicy> origin_policy;
 };
 
 class LampV8RuntimeScheduler final
@@ -1312,7 +1339,77 @@ private:
                     par_fn
                 );
             }
+            ::v8::Local<::v8::Function> origin_fn;
+            if (::v8::Function::New(context, &LampV8RuntimeScheduler::OnConfigureOriginAllowance, self_ext).ToLocal(&origin_fn)) {
+                (void)bridge_val.As<::v8::Object>()->Set(
+                    context,
+                    ::v8::String::NewFromUtf8Literal(isolate, "configureOriginAllowance"),
+                    origin_fn
+                );
+            }
         }
+    }
+
+    static void OnConfigureOriginAllowance(const ::v8::FunctionCallbackInfo<::v8::Value>& info) {
+        auto* isolate = info.GetIsolate();
+        if (info.Data().IsEmpty() || !info.Data()->IsValue() ||
+            info.Length() < 1 || !info[0]->IsString()) {
+            return;
+        }
+        auto data_val = info.Data().As<::v8::Value>();
+        if (!data_val->IsExternal()) {
+            return;
+        }
+        auto* self = static_cast<LampV8RuntimeScheduler*>(
+            data_val.As<::v8::External>()->Value(::v8::kExternalPointerTypeTagDefault)
+        );
+        if (self == nullptr || !self->config_.origin_policy) {
+            return;
+        }
+
+        auto context = isolate->GetCurrentContext();
+        ::v8::Local<::v8::Value> parsed_val;
+        if (!::v8::JSON::Parse(context, info[0].As<::v8::String>()).ToLocal(&parsed_val) ||
+            !parsed_val->IsObject()) {
+            return;
+        }
+        auto obj = parsed_val.As<::v8::Object>();
+
+        core::OriginAllowanceConfig policy_cfg;
+        policy_cfg.mode = core::OriginAllowanceMode::DenyAll;
+
+        ::v8::Local<::v8::Value> mode_val;
+        if (obj->Get(context, ::v8::String::NewFromUtf8Literal(isolate, "mode")).ToLocal(&mode_val) &&
+            mode_val->IsString()) {
+            ::v8::String::Utf8Value mode_u8(isolate, mode_val);
+            const std::string_view mode_sv = *mode_u8 ? std::string_view(*mode_u8, mode_u8.length()) : std::string_view{};
+            if (mode_sv == "allow_all") {
+                policy_cfg.mode = core::OriginAllowanceMode::AllowAll;
+            } else if (mode_sv == "allow_list") {
+                policy_cfg.mode = core::OriginAllowanceMode::AllowList;
+            } else {
+                policy_cfg.mode = core::OriginAllowanceMode::DenyAll;
+            }
+        }
+
+        ::v8::Local<::v8::Value> origins_val;
+        if (obj->Get(context, ::v8::String::NewFromUtf8Literal(isolate, "origins")).ToLocal(&origins_val) &&
+            origins_val->IsArray()) {
+            auto arr = origins_val.As<::v8::Array>();
+            const std::uint32_t len = arr->Length();
+            policy_cfg.allowedOrigins.reserve(len);
+            for (std::uint32_t i = 0; i < len; ++i) {
+                ::v8::Local<::v8::Value> item;
+                if (arr->Get(context, i).ToLocal(&item) && item->IsString()) {
+                    ::v8::String::Utf8Value item_u8(isolate, item);
+                    if (*item_u8) {
+                        policy_cfg.allowedOrigins.emplace_back(*item_u8, item_u8.length());
+                    }
+                }
+            }
+        }
+
+        self->config_.origin_policy->configure(std::move(policy_cfg));
     }
 
     static std::string FormatV8Exception(

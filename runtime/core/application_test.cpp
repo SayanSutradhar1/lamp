@@ -1320,7 +1320,42 @@ int runTests() {
         {"Stopping event state and timing",
          testStoppingEventStateAndTiming},
         {"Concurrent shutdown event ordering",
-         testConcurrentShutdownEventOrdering}
+         testConcurrentShutdownEventOrdering},
+        {"Origin allowance policy modes",
+         []() {
+             // Default: DenyAll (allowOrigin: false)
+             LampApplication defaultApp(LampConfig{});
+             LAMP_ASSERT(!defaultApp.isOriginAllowed("https://example.com"));
+             auto denied = defaultApp.evaluateOrigin(std::string_view("https://example.com"));
+             LAMP_ASSERT(!denied.allowed);
+             LAMP_ASSERT_EQ(denied.errorCode, std::string("CORS_ORIGIN_DENIED"));
+
+             // Requests without Origin header are allowed by default
+             auto noOrigin = defaultApp.evaluateOrigin(std::nullopt);
+             LAMP_ASSERT(noOrigin.allowed);
+
+             // AllowAll (allowOrigin: true)
+             LampConfig allowAllCfg;
+             allowAllCfg.originAllowance.mode = OriginAllowanceMode::AllowAll;
+             LampApplication allowAllApp(allowAllCfg);
+             LAMP_ASSERT(allowAllApp.isOriginAllowed("https://any.example.org"));
+             auto allEval = allowAllApp.evaluateOrigin(std::string_view("https://any.example.org"));
+             LAMP_ASSERT(allEval.allowed);
+             LAMP_ASSERT_EQ(allEval.accessControlAllowOrigin, std::string("*"));
+
+             // AllowList with normalization
+             LampConfig allowListCfg;
+             allowListCfg.originAllowance.mode = OriginAllowanceMode::AllowList;
+             allowListCfg.originAllowance.allowedOrigins = {
+                 "https://App.Example.com:8443/",
+                 "http://localhost:3000"
+             };
+             LampApplication allowListApp(allowListCfg);
+             LAMP_ASSERT(allowListApp.isOriginAllowed("https://app.example.com:8443"));
+             LAMP_ASSERT(allowListApp.isOriginAllowed("http://localhost:3000/"));
+             LAMP_ASSERT(!allowListApp.isOriginAllowed("https://evil.example.com"));
+             LAMP_ASSERT(!allowListApp.isOriginAllowed("null"));
+         }}
     };
 
     std::size_t passed = 0;

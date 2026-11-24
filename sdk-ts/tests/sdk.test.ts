@@ -179,3 +179,65 @@ test("server SDK exports contain zero HTTP or client symbols", async () => {
   assert.equal("startLampNodeServer" in pkg, false);
   assert.equal(typeof new LampError("boom").toJSON, "function");
 });
+
+test("createLampApp allowOrigin contract supports boolean, expose/callback, and native bridge sync", () => {
+  const recordedPolicies: string[] = [];
+  const mockBridge: NativeHostBridge = {
+    registerOperation() {},
+    configureOriginAllowance(policyJson) {
+      recordedPolicies.push(policyJson);
+    },
+  };
+
+  const prev = getNativeHostBridge();
+  setNativeHostBridge(mockBridge);
+  try {
+    // 1. Default is false -> deny_all
+    const defaultApp = createLampApp();
+    assert.deepEqual(defaultApp.originPolicy(), { mode: "deny_all", origins: [] });
+    assert.equal(defaultApp.isOriginAllowed("https://example.com"), false);
+
+    // 2. allowOrigin: true -> allow_all
+    const allowAllApp = createLampApp({ allowOrigin: true });
+    assert.deepEqual(allowAllApp.originPolicy(), { mode: "allow_all", origins: [] });
+    assert.equal(allowAllApp.isOriginAllowed("https://any.example.org"), true);
+
+    // 3. allowOrigin: (expose, callback) => boolean returning true
+    let callbackCount = 0;
+    const customApp = createLampApp({
+      allowOrigin: (expose, callback) => {
+        expose(["https://App.Example.com:8443/", "http://localhost:3000"]);
+        callback();
+        callbackCount += 1;
+        return true;
+      },
+    });
+    assert.equal(callbackCount, 1);
+    assert.deepEqual(customApp.originPolicy(), {
+      mode: "allow_list",
+      origins: ["https://app.example.com:8443", "http://localhost:3000"],
+    });
+    assert.equal(customApp.isOriginAllowed("https://app.example.com:8443"), true);
+    assert.equal(customApp.isOriginAllowed("http://localhost:3000/"), true);
+    assert.equal(customApp.isOriginAllowed("https://evil.example.com"), false);
+
+    // 4. allowOrigin returning false -> deny_all (CORS error)
+    const deniedFnApp = createLampApp({
+      allowOrigin: (expose, callback) => {
+        expose(["https://allowed.example.com"]);
+        callback();
+        return false;
+      },
+    });
+    assert.deepEqual(deniedFnApp.originPolicy(), { mode: "deny_all", origins: [] });
+    assert.equal(deniedFnApp.isOriginAllowed("https://allowed.example.com"), false);
+
+    assert.equal(recordedPolicies.length, 4);
+    assert.deepEqual(JSON.parse(recordedPolicies[2]), {
+      mode: "allow_list",
+      origins: ["https://app.example.com:8443", "http://localhost:3000"],
+    });
+  } finally {
+    setNativeHostBridge(prev);
+  }
+});

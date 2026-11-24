@@ -15,6 +15,7 @@
 // ============================================================
 
 #include "core/dynamic_worker_pool.hpp"
+#include "core/origin_policy.hpp"
 #include "security/security_context.hpp"
 #include "transport/lamp_binary_protocol.hpp"
 #include "transport/wire_cache.hpp"
@@ -73,6 +74,7 @@ struct LampBinaryServerConfig final {
     std::size_t max_frame_bytes = 32U * 1024U * 1024U;
     FullCycleWireCacheConfig wire_cache{};
     core::DynamicWorkerPoolConfig worker_pool{};
+    std::shared_ptr<core::OriginAllowancePolicy> origin_policy{};
 };
 
 class LampBinaryServer final {
@@ -183,6 +185,11 @@ public:
     [[nodiscard]]
     std::shared_ptr<FullCycleWireCache> WireCache() const noexcept {
         return wire_cache_;
+    }
+
+    [[nodiscard]]
+    std::shared_ptr<core::OriginAllowancePolicy> OriginPolicy() const noexcept {
+        return config_.origin_policy;
     }
 
 private:
@@ -531,6 +538,9 @@ private:
             } else if (conn->raw_in[0] == 'G' && conn->raw_in[1] == 'E' &&
                        conn->raw_in[2] == 'T' && conn->raw_in[3] == ' ') {
                 return TryWebSocketUpgrade(conn);
+            } else if (conn->raw_in.size() >= 8U &&
+                       std::memcmp(conn->raw_in.data(), "OPTIONS ", 8U) == 0) {
+                return HandleCorsPreflight(conn);
             } else {
                 static constexpr std::string_view kReject =
                     "HTTP/1.1 426 Upgrade Required\r\n"
@@ -558,6 +568,104 @@ private:
         return DrainLmpFrames(conn);
     }
 
+    static void EnqueueCorsErrorResponse(
+        const std::shared_ptr<Connection>& conn,
+        const core::OriginEvaluationResult& eval
+    ) {
+        const std::string err_code = eval.errorCode.empty()
+            ? std::string("CORS_ORIGIN_DENIED")
+            : eval.errorCode;
+        const std::string err_msg = eval.errorMessage.empty()
+            ? std::string("Origin is not allowed by Lamp CORS policy")
+            : eval.errorMessage;
+        const std::string body =
+            "{\"error\":true,\"code\":\"PERMISSION_DENIED\",\"identifier\":\"" +
+            err_code + "\",\"message\":\"" + err_msg + "\"}";
+        const std::string resp =
+            "HTTP/1.1 403 Forbidden\r\n"
+            "Connection: close\r\n"
+            "Content-Type: application/json\r\n"
+            "X-Lamp-Cors-Error: " + err_code + "\r\n"
+            "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" +
+            body;
+        conn->EnqueueWireBytes(
+            std::vector<std::uint8_t>(resp.begin(), resp.end())
+        );
+        conn->close_after_flush = true;
+    }
+
+    static std::optional<std::string_view> ExtractOriginHeader(std::string_view headers) noexcept {
+        std::size_t pos = 0;
+        while (pos < headers.size()) {
+            const auto nl = headers.find("\r\n", pos);
+            const auto line = nl == std::string_view::npos
+                ? headers.substr(pos)
+                : headers.substr(pos, nl - pos);
+            const auto colon = line.find(':');
+            if (colon != std::string_view::npos) {
+                const auto name = line.substr(0, colon);
+                if (name.size() == 6U &&
+                    security::detail::StartsWithIgnoreCase(name, "origin")) {
+                    auto val = line.substr(colon + 1);
+                    while (!val.empty() && (val.front() == ' ' || val.front() == '\t')) {
+                        val.remove_prefix(1);
+                    }
+                    return val;
+                }
+            }
+            if (nl == std::string_view::npos) break;
+            pos = nl + 2;
+        }
+        return std::nullopt;
+    }
+
+    bool HandleCorsPreflight(const std::shared_ptr<Connection>& conn) {
+        const std::string_view view(
+            reinterpret_cast<const char*>(conn->raw_in.data()),
+            conn->raw_in.size()
+        );
+        const auto header_end = view.find("\r\n\r\n");
+        if (header_end == std::string_view::npos) {
+            return conn->raw_in.size() <= 16384U;
+        }
+
+        const std::string_view headers = view.substr(0, header_end);
+        const auto origin_opt = ExtractOriginHeader(headers);
+
+        if (config_.origin_policy) {
+            const auto eval = config_.origin_policy->evaluate(origin_opt);
+            if (!eval.allowed) {
+                EnqueueCorsErrorResponse(conn, eval);
+                return true;
+            }
+            std::string resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n";
+            if (!eval.accessControlAllowOrigin.empty()) {
+                resp += "Access-Control-Allow-Origin: " + eval.accessControlAllowOrigin + "\r\n";
+                resp += "Vary: Origin\r\n";
+            }
+            resp += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
+            resp += "Access-Control-Allow-Headers: Content-Type, Authorization, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version\r\n\r\n";
+            conn->EnqueueWireBytes(
+                std::vector<std::uint8_t>(resp.begin(), resp.end())
+            );
+            conn->close_after_flush = true;
+            return true;
+        }
+
+        static constexpr std::string_view kForbidden =
+            "HTTP/1.1 403 Forbidden\r\n"
+            "Connection: close\r\n"
+            "Content-Type: application/json\r\n"
+            "X-Lamp-Cors-Error: CORS_ORIGIN_DENIED\r\n"
+            "Content-Length: 92\r\n\r\n"
+            "{\"error\":true,\"code\":\"PERMISSION_DENIED\",\"identifier\":\"CORS_ORIGIN_DENIED\",\"message\":\"CORS\"}";
+        conn->EnqueueWireBytes(
+            std::vector<std::uint8_t>(kForbidden.begin(), kForbidden.end())
+        );
+        conn->close_after_flush = true;
+        return true;
+    }
+
     bool TryWebSocketUpgrade(const std::shared_ptr<Connection>& conn) {
         const std::string_view view(
             reinterpret_cast<const char*>(conn->raw_in.data()),
@@ -570,6 +678,7 @@ private:
 
         const std::string_view headers = view.substr(0, header_end);
         std::string_view ws_key;
+        std::optional<std::string_view> origin_header;
         bool has_upgrade_ws = false;
 
         std::size_t pos = 0;
@@ -590,10 +699,21 @@ private:
                 } else if (security::detail::StartsWithIgnoreCase(name, "upgrade") &&
                            security::detail::ContainsIgnoreCase(val, "websocket")) {
                     has_upgrade_ws = true;
+                } else if (name.size() == 6U &&
+                           security::detail::StartsWithIgnoreCase(name, "origin")) {
+                    origin_header = val;
                 }
             }
             if (nl == std::string_view::npos) break;
             pos = nl + 2;
+        }
+
+        if (config_.origin_policy) {
+            const auto eval = config_.origin_policy->evaluate(origin_header);
+            if (!eval.allowed) {
+                EnqueueCorsErrorResponse(conn, eval);
+                return true;
+            }
         }
 
         if (!has_upgrade_ws || ws_key.empty()) {
@@ -614,7 +734,15 @@ private:
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
+            "Sec-WebSocket-Accept: " + accept + "\r\n";
+        if (config_.origin_policy && origin_header.has_value()) {
+            const auto eval = config_.origin_policy->evaluate(origin_header);
+            if (eval.allowed && !eval.accessControlAllowOrigin.empty()) {
+                handshake += "Access-Control-Allow-Origin: " + eval.accessControlAllowOrigin + "\r\n";
+                handshake += "Vary: Origin\r\n";
+            }
+        }
+        handshake += "\r\n";
 
         conn->protocol = ConnProtocol::WebSocketLmp1;
         conn->EnqueueWireBytes(

@@ -3,15 +3,19 @@ import { getNativeHostBridge } from "./native_bridge.ts";
 import { validateWithSchema } from "./schema.ts";
 import type {
   InvokeCallOptions,
+  LampAllowOriginConfig,
   LampApp,
   LampAppConfig,
   LampAppState,
   LampFile,
+  LampOriginPolicy,
   LampParallelTaskSpec,
   LampStartInfo,
   LifecycleHook,
   OperationContext,
   OperationDefinition,
+  OriginConfiguredCallback,
+  OriginExposeFn,
   RegisteredOperationMetadata,
 } from "./types.ts";
 
@@ -114,6 +118,45 @@ async function runParallelTasks(
   );
 }
 
+function normalizeOriginString(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+  if (trimmed === "*") {
+    return "*";
+  }
+  return trimmed.replace(/\/+$/, "").toLowerCase();
+}
+
+function resolveOriginPolicy(allowOrigin: LampAllowOriginConfig | undefined): LampOriginPolicy {
+  if (allowOrigin === true) {
+    return { mode: "allow_all", origins: [] };
+  }
+  if (typeof allowOrigin === "function") {
+    let configuredOrigins: string[] = [];
+    const callback: OriginConfiguredCallback = () => {};
+    const expose: OriginExposeFn = (origins) => {
+      if (!Array.isArray(origins)) {
+        throw new LampError("allowOrigin expose() requires an array of origin strings", {
+          code: "INVALID_ARGUMENT",
+          identifier: "INVALID_ORIGIN_CONFIG",
+        });
+      }
+      configuredOrigins = origins
+        .map((entry) => (typeof entry === "string" ? normalizeOriginString(entry) : ""))
+        .filter((entry) => entry.length > 0);
+      callback(configuredOrigins);
+    };
+    const allowed = Boolean(allowOrigin(expose, callback));
+    if (allowed) {
+      return { mode: "allow_list", origins: configuredOrigins };
+    }
+    return { mode: "deny_all", origins: [] };
+  }
+  return { mode: "deny_all", origins: [] };
+}
+
 /**
  * Creates a new server-side {@link LampApp} operation registry and lifecycle controller.
  *
@@ -152,6 +195,9 @@ export function createLampApp(config: LampAppConfig = {}): LampApp {
     config.cache.defaultTtl > 0
       ? Math.min(config.cache.defaultTtl, maxTtlLimitSeconds)
       : Math.min(60, maxTtlLimitSeconds);
+
+  const resolvedOriginPolicy = resolveOriginPolicy(config.allowOrigin);
+  getNativeHostBridge()?.configureOriginAllowance?.(JSON.stringify(resolvedOriginPolicy));
 
   async function executeStoredOperation<TOutput>(
     entry: StoredOperation,
@@ -396,6 +442,29 @@ export function createLampApp(config: LampAppConfig = {}): LampApp {
 
     operations() {
       return Array.from(operationsMap.values(), (entry) => entry.meta);
+    },
+
+    originPolicy() {
+      return {
+        mode: resolvedOriginPolicy.mode,
+        origins: [...resolvedOriginPolicy.origins],
+      };
+    },
+
+    isOriginAllowed(origin) {
+      if (resolvedOriginPolicy.mode === "allow_all") {
+        return true;
+      }
+      if (resolvedOriginPolicy.mode === "deny_all") {
+        return false;
+      }
+      const normalized = normalizeOriginString(origin);
+      if (normalized.length === 0) {
+        return false;
+      }
+      return resolvedOriginPolicy.origins.some(
+        (allowed) => allowed === "*" || (normalized !== "null" && allowed === normalized)
+      );
     },
 
     onStart(hook) {

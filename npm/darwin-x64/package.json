@@ -1,0 +1,15 @@
+{
+  "name": "@lamp/darwin-x64",
+  "version": "0.2.0",
+  "description": "Prebuilt Lamp native C++20 + embedded V8 server binary for darwin-x64",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/lamp_server"
+  ],
+  "preferUnplugged": true
+}

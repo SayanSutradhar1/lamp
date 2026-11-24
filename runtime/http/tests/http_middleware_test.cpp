@@ -563,6 +563,60 @@ void TestConvenienceComposition() {
     );
 }
 
+void TestOriginAllowanceMiddleware() {
+    auto policy = std::make_shared<lamp::core::OriginAllowancePolicy>();
+
+    auto handler = lamp::http::ComposeHttpMiddleware(
+        [](const HttpRequest&, const HttpRouteContext&) {
+            return MakeResponse("ok");
+        },
+        {lamp::http::MakeOriginAllowanceMiddleware(policy)}
+    );
+
+    // 1. Default DenyAll -> 403 CORS error
+    {
+        HttpRequest req = MakeRequest(HttpMethod::Get, "/api/data");
+        req.setHeader("Origin", "https://client.example.com");
+        const HttpResponse res = handler(req, HttpRouteContext{});
+        Check(res.statusCode() == 403, "Expected 403 for denied origin");
+        Check(res.header("X-Lamp-Cors-Error").value_or("") == "CORS_ORIGIN_DENIED",
+              "Expected CORS_ORIGIN_DENIED header");
+    }
+
+    // 2. AllowAll -> 200 with Access-Control-Allow-Origin: *
+    {
+        policy->setAllowAll(true);
+        HttpRequest req = MakeRequest(HttpMethod::Get, "/api/data");
+        req.setHeader("Origin", "https://any.example.com");
+        const HttpResponse res = handler(req, HttpRouteContext{});
+        Check(res.statusCode() == 200, "Expected 200 for AllowAll");
+        Check(res.header("Access-Control-Allow-Origin").value_or("") == "*",
+              "Expected wildcard ACAO header");
+    }
+
+    // 3. AllowList -> allowed origin passes, disallowed origin fails, OPTIONS preflight returns 204
+    {
+        policy->setAllowedOrigins({"https://trusted.example.com"});
+
+        HttpRequest okReq = MakeRequest(HttpMethod::Get, "/api/data");
+        okReq.setHeader("Origin", "https://trusted.example.com");
+        const HttpResponse okRes = handler(okReq, HttpRouteContext{});
+        Check(okRes.statusCode() == 200, "Expected 200 for trusted origin");
+        Check(okRes.header("Access-Control-Allow-Origin").value_or("") == "https://trusted.example.com",
+              "Expected echoed ACAO header");
+
+        HttpRequest preflightReq = MakeRequest(HttpMethod::Options, "/api/data");
+        preflightReq.setHeader("Origin", "https://trusted.example.com");
+        const HttpResponse preflightRes = handler(preflightReq, HttpRouteContext{});
+        Check(preflightRes.statusCode() == 204, "Expected 204 for OPTIONS preflight");
+
+        HttpRequest badReq = MakeRequest(HttpMethod::Get, "/api/data");
+        badReq.setHeader("Origin", "https://untrusted.example.com");
+        const HttpResponse badRes = handler(badReq, HttpRouteContext{});
+        Check(badRes.statusCode() == 403, "Expected 403 for untrusted origin");
+    }
+}
+
 struct TestCase final {
     const char* name;
     void (*run)();
@@ -584,7 +638,8 @@ int main() {
         {"IndependentInvocations", TestIndependentInvocations},
         {"RouterIntegration", TestRouterIntegration},
         {"ConcurrentInvocations", TestConcurrentInvocations},
-        {"ConvenienceComposition", TestConvenienceComposition}
+        {"ConvenienceComposition", TestConvenienceComposition},
+        {"OriginAllowanceMiddleware", TestOriginAllowanceMiddleware}
     };
 
     std::size_t passed = 0;

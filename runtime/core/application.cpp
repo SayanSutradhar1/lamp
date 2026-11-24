@@ -74,7 +74,8 @@ Result<void> failureResult(
 LampApplication::LampApplication(
     LampConfig config
 )
-    : config_(std::move(config)) {
+    : config_(std::move(config)),
+      originPolicy_(std::make_shared<OriginAllowancePolicy>(config_.originAllowance)) {
 }
 
 // ============================================================
@@ -129,6 +130,7 @@ Result<void> LampApplication::configure(
     }
 
     config_ = std::move(config);
+    originPolicy_->configure(config_.originAllowance);
 
     return Result<void>::success();
 }
@@ -673,6 +675,23 @@ LampApplication::failure() const {
 const std::string&
 LampApplication::name() const noexcept {
     return config_.applicationName;
+}
+
+std::shared_ptr<OriginAllowancePolicy>
+LampApplication::originPolicy() const noexcept {
+    return originPolicy_;
+}
+
+bool LampApplication::isOriginAllowed(
+    std::string_view origin
+) const {
+    return originPolicy_->isOriginAllowed(origin);
+}
+
+OriginEvaluationResult LampApplication::evaluateOrigin(
+    std::optional<std::string_view> origin
+) const {
+    return originPolicy_->evaluate(origin);
 }
 
 std::size_t

@@ -6,7 +6,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import { stripTypeScriptTypes } from "node:module";
+import { createRequire, stripTypeScriptTypes } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,32 +43,71 @@ export function prepareEntryForEmbeddedV8(source: string, filename: string): str
 /**
  * Resolves the filesystem path to the compiled C++ `lamp_server` native binary.
  *
- * Honors `process.env.LAMP_SERVER_BIN` first before checking repository build directories.
+ * Resolution order:
+ * 1. `process.env.LAMP_SERVER_BIN`
+ * 2. Installed platform package (`@lamp/<platform>-<arch>/bin/lamp_server(.exe)`)
+ * 3. Local package `bin/` directory
+ * 4. Repository CMake build directories (for local development)
  *
- * @returns Executable path or binary name when relying on `PATH`.
+ * @returns Executable path to `lamp_server`.
  */
 export function resolveLampServerBinary(): string {
   if (process.env.LAMP_SERVER_BIN && fs.existsSync(process.env.LAMP_SERVER_BIN)) {
     return process.env.LAMP_SERVER_BIN;
   }
 
-  const binDir = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(binDir, "..", "..");
   const exeName = process.platform === "win32" ? "lamp_server.exe" : "lamp_server";
+  const platformPkg = `@lamp/${process.platform}-${process.arch}`;
 
-  const candidates = [
-    path.join(repoRoot, "build-msvc-v8", "host", exeName),
-    path.join(repoRoot, "build-msvc-v8", "host", "Release", exeName),
-    path.join(repoRoot, "build", "host", exeName),
-    path.join(repoRoot, "build-ci", "host", exeName),
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgJsonPath = require.resolve(`${platformPkg}/package.json`);
+    const pkgBinary = path.join(path.dirname(pkgJsonPath), "bin", exeName);
+    if (fs.existsSync(pkgBinary)) {
+      return pkgBinary;
+    }
+  } catch {
+    // Platform optionalDependency is not installed; fall through to local candidates.
+  }
+
+  const binDir = path.dirname(fileURLToPath(import.meta.url));
+  const pkgRoots = [
+    path.resolve(binDir, ".."),
+    path.resolve(binDir, "..", ".."),
   ];
+  for (const root of pkgRoots) {
+    const localBin = path.join(root, "bin", exeName);
+    if (fs.existsSync(localBin) && localBin !== fileURLToPath(import.meta.url)) {
+      return localBin;
+    }
+  }
+
+  const repoRoots = [
+    path.resolve(binDir, "..", ".."),
+    path.resolve(binDir, "..", "..", ".."),
+  ];
+  const candidates: string[] = [];
+  for (const repoRoot of repoRoots) {
+    candidates.push(
+      path.join(repoRoot, "build-msvc-v8", "host", exeName),
+      path.join(repoRoot, "build-msvc-v8", "host", "Release", exeName),
+      path.join(repoRoot, "build", "host", exeName),
+      path.join(repoRoot, "build", "host", "Release", exeName),
+      path.join(repoRoot, "build-ci", "host", exeName),
+      path.join(repoRoot, "build-ci", "host", "Release", exeName)
+    );
+  }
 
   for (const c of candidates) {
     if (fs.existsSync(c)) {
       return c;
     }
   }
-  return exeName;
+
+  throw new Error(
+    `Unable to locate native V8 runtime binary (${exeName}) for ${process.platform}-${process.arch}. ` +
+      `Install "${platformPkg}" or set LAMP_SERVER_BIN to a compiled lamp_server executable.`
+  );
 }
 
 function main(): void {
@@ -123,6 +162,14 @@ function main(): void {
     process.exit(1);
   }
 
+  let binPath: string;
+  try {
+    binPath = resolveLampServerBinary();
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+
   const rawSource = fs.readFileSync(resolvedEntry, "utf8");
   const preparedJs = prepareEntryForEmbeddedV8(rawSource, resolvedEntry);
 
@@ -130,7 +177,6 @@ function main(): void {
   const compiledEntry = path.join(tmpDir, "entry.v8.js");
   fs.writeFileSync(compiledEntry, preparedJs, "utf8");
 
-  const binPath = resolveLampServerBinary();
   const child = spawn(
     binPath,
     ["--entry", compiledEntry, "--host", host, "--port", port, ...passThroughFlags],

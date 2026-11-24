@@ -21,6 +21,7 @@
 #include "bridge/operation_registry.hpp"
 #include "cache/local_operation_cache.hpp"
 #include "core/dynamic_worker_pool.hpp"
+#include "core/origin_policy.hpp"
 #include "host/lamp_v8_scheduler.hpp"
 #include "serialization/serialization_value.hpp"
 #include "telemetry/health_check.hpp"
@@ -51,6 +52,7 @@ struct LampAppServerConfig final {
 
     core::DynamicWorkerPoolConfig worker_pool{};
     transport::FullCycleWireCacheConfig wire_cache{};
+    core::OriginAllowanceConfig origin_allowance{};
 };
 
 class LampAppServer final {
@@ -63,7 +65,8 @@ public:
           tracer_(std::make_shared<telemetry::Tracer>()),
           health_(std::make_shared<telemetry::HealthRegistry>()),
           worker_pool_(std::make_shared<core::DynamicWorkerPool>(config_.worker_pool)),
-          wire_cache_(std::make_shared<transport::FullCycleWireCache>(config_.wire_cache)) {}
+          wire_cache_(std::make_shared<transport::FullCycleWireCache>(config_.wire_cache)),
+          origin_policy_(std::make_shared<core::OriginAllowancePolicy>(config_.origin_allowance)) {}
 
     ~LampAppServer() noexcept {
         Shutdown();
@@ -84,6 +87,7 @@ public:
         v8_cfg.max_pending_tasks = config_.max_outstanding_ops;
         v8_cfg.max_parallel_isolates = config_.worker_pool.max_threads;
         v8_cfg.worker_pool = worker_pool_;
+        v8_cfg.origin_policy = origin_policy_;
 
         scheduler_ = std::make_shared<LampV8RuntimeScheduler>(
             registry_,
@@ -115,6 +119,7 @@ public:
         bin_cfg.max_connections = config_.max_connections;
         bin_cfg.worker_pool = config_.worker_pool;
         bin_cfg.wire_cache = config_.wire_cache;
+        bin_cfg.origin_policy = origin_policy_;
 
         binary_server_ = std::make_unique<transport::LampBinaryServer>(
             [this](const transport::DecodedRpcInvocation& inv, std::uint64_t request_id) {
@@ -180,6 +185,11 @@ public:
     [[nodiscard]]
     std::shared_ptr<telemetry::MetricsRegistry> Metrics() const noexcept {
         return metrics_;
+    }
+
+    [[nodiscard]]
+    std::shared_ptr<core::OriginAllowancePolicy> OriginPolicy() const noexcept {
+        return origin_policy_;
     }
 
 private:
@@ -265,6 +275,7 @@ private:
     std::shared_ptr<telemetry::HealthRegistry> health_;
     std::shared_ptr<core::DynamicWorkerPool> worker_pool_;
     std::shared_ptr<transport::FullCycleWireCache> wire_cache_;
+    std::shared_ptr<core::OriginAllowancePolicy> origin_policy_;
 
     std::shared_ptr<LampV8RuntimeScheduler> scheduler_;
     std::unique_ptr<transport::LampBinaryServer> binary_server_;

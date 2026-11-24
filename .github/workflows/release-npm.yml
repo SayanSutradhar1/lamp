@@ -1,0 +1,127 @@
+name: Release npm Packages (V8 Enabled)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-native-v8:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win32-x64
+            os: windows-2022
+            exe: lamp_server.exe
+          - target: linux-x64
+            os: ubuntu-24.04
+            exe: lamp_server
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            exe: lamp_server
+          - target: darwin-arm64
+            os: macos-14
+            exe: lamp_server
+          - target: darwin-x64
+            os: macos-13
+            exe: lamp_server
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore Cached V8 SDK
+        id: cache-v8
+        uses: actions/cache@v4
+        with:
+          path: v8-sdk
+          key: v8-monolith-${{ matrix.target }}-${{ vars.V8_SDK_VERSION || 'v1' }}
+
+      - name: Configure CMake (V8 ON)
+        if: steps.cache-v8.outputs.cache-hit == 'true' || env.LAMP_V8_ROOT != ''
+        env:
+          LAMP_V8_ROOT: ${{ env.LAMP_V8_ROOT || format('{0}/v8-sdk', github.workspace) }}
+        run: >
+          cmake -S . -B build-release-v8
+          -DCMAKE_BUILD_TYPE=Release
+          -DLAMP_ENABLE_V8=ON
+          -DLAMP_BUILD_TESTS=ON
+          -DLAMP_V8_ROOT="${{ env.LAMP_V8_ROOT }}"
+
+      - name: Build lamp_server & V8 Tests
+        if: steps.cache-v8.outputs.cache-hit == 'true' || env.LAMP_V8_ROOT != ''
+        run: cmake --build build-release-v8 --config Release --target lamp_server lamp_app_server_test --parallel 4
+
+      - name: Run V8 Integration Tests
+        if: steps.cache-v8.outputs.cache-hit == 'true' || env.LAMP_V8_ROOT != ''
+        run: ctest --test-dir build-release-v8 -C Release -R lamp_app_server_test --output-on-failure
+
+      - name: Upload Native Binary Artifact
+        if: steps.cache-v8.outputs.cache-hit == 'true' || env.LAMP_V8_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: lamp-server-${{ matrix.target }}
+          path: |
+            build-release-v8/host/${{ matrix.exe }}
+            build-release-v8/host/Release/${{ matrix.exe }}
+          if-no-files-found: error
+
+  publish-npm:
+    needs: build-native-v8
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download Native Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: lamp-server-*
+
+      - name: Stage Platform Binaries
+        run: |
+          for dir in artifacts/lamp-server-*; do
+            target="${dir#artifacts/lamp-server-}"
+            bin=$(find "$dir" -type f \( -name "lamp_server" -o -name "lamp_server.exe" \) | head -n 1)
+            if [ -n "$bin" ]; then
+              node npm/stage-binary.mjs "$target" "$bin"
+            fi
+          done
+
+      - name: Build & Test TypeScript Packages
+        run: |
+          cd client-ts && npm ci && npm run build && node --test tests/client_binary.test.ts
+          cd ../sdk-ts && npm ci --omit=optional && npm run build && node --test tests/sdk.test.ts
+
+      - name: Publish Platform Packages
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for pkg in npm/*; do
+            if [ -d "$pkg/bin" ]; then
+              (cd "$pkg" && npm publish --provenance --access public)
+            fi
+          done
+
+      - name: Publish lamp-client & lamp
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          (cd client-ts && npm publish --provenance --access public)
+          (cd sdk-ts && npm publish --provenance --access public)

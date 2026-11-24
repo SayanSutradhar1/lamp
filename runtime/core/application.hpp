@@ -4,6 +4,7 @@
 #include "core/config.hpp"
 #include "core/error.hpp"
 #include "core/lifecycle.hpp"
+#include "core/origin_policy.hpp"
 #include "core/result.hpp"
 
 #include <cstddef>
@@ -212,6 +213,23 @@ public:
     const std::string& name() const noexcept;
 
     // --------------------------------------------------------
+    // Origin Allowance / CORS Policy
+    // --------------------------------------------------------
+
+    [[nodiscard]]
+    std::shared_ptr<OriginAllowancePolicy> originPolicy() const noexcept;
+
+    [[nodiscard]]
+    bool isOriginAllowed(
+        std::string_view origin
+    ) const;
+
+    [[nodiscard]]
+    OriginEvaluationResult evaluateOrigin(
+        std::optional<std::string_view> origin
+    ) const;
+
+    // --------------------------------------------------------
     // Lifecycle Events
     // --------------------------------------------------------
 
@@ -277,6 +295,8 @@ private:
     // ========================================================
 
     LampConfig config_;
+
+    std::shared_ptr<OriginAllowancePolicy> originPolicy_;
 
     Lifecycle lifecycle_;
 
