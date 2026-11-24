@@ -83,6 +83,7 @@ jobs:
 
   publish-npm:
     needs: build-native-v8
+    if: always() && needs.build-native-v8.result != 'failure'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
