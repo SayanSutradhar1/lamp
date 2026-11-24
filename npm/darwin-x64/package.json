@@ -1,5 +1,5 @@
 {
-  "name": "lamp-app-darwin-x64",
+  "name": "@sayansutradhar1/lamp-app-darwin-x64",
   "version": "0.2.0",
   "description": "Prebuilt Lamp native C++20 + embedded V8 server binary for darwin-x64",
   "os": [

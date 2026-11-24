@@ -57,7 +57,7 @@ export function resolveLampServerBinary(): string {
   }
 
   const exeName = process.platform === "win32" ? "lamp_server.exe" : "lamp_server";
-  const platformPkg = `lamp-app-${process.platform}-${process.arch}`;
+  const platformPkg = `@sayansutradhar1/lamp-app-${process.platform}-${process.arch}`;
 
   try {
     const require = createRequire(import.meta.url);
