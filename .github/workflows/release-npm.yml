@@ -122,6 +122,7 @@ jobs:
             echo "Skipping client_binary.test.ts (linux-x64 lamp_server not present in this run)"
           fi
           cd ../sdk-ts && npm ci --omit=optional && npm run build && node --test tests/sdk.test.ts
+          cd ../create-lamp-app && npm ci && npm run build && node --test tests/create_lamp_app.test.ts
 
       - name: Publish Platform Packages
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
@@ -133,8 +134,9 @@ jobs:
             fi
           done
 
-      - name: Publish lamp-client & lamp-app
+      - name: Publish lamp-client, lamp-app & create-lamp-app
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
         run: |
           (cd client-ts && npm publish --provenance --access public)
           (cd sdk-ts && npm publish --provenance --access public)
+          (cd create-lamp-app && npm publish --provenance --access public)

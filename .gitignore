@@ -58,6 +58,7 @@ compile_commands.json
 node_modules/
 /sdk-ts/dist/
 /client-ts/dist/
+/create-lamp-app/dist/
 /npm/*/bin/
 *.tgz
 *.tsbuildinfo

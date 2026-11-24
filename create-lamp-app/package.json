@@ -1,0 +1,35 @@
+{
+  "name": "create-lamp-app",
+  "version": "0.2.0",
+  "description": "Scaffold a TypeScript + Node.js backend project powered by the Lamp C++20/V8 framework",
+  "type": "module",
+  "main": "./dist/bin/create-lamp-app.js",
+  "bin": {
+    "create-lamp-app": "./dist/bin/create-lamp-app.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "test": "node --test tests/create_lamp_app.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "keywords": [
+    "lamp",
+    "lamp-app",
+    "create-lamp-app",
+    "cli",
+    "scaffold",
+    "v8",
+    "typescript"
+  ]
+}
