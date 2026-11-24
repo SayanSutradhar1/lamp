@@ -1,5 +1,5 @@
 {
-  "name": "lamp",
+  "name": "lamp-app",
   "version": "0.2.0",
   "description": "Server-side contract SDK for the Lamp native C++ binary backend runtime (use lamp-client for client contracts)",
   "type": "module",
@@ -12,7 +12,8 @@
     }
   },
   "bin": {
-    "lamp": "./dist/bin/lamp.js"
+    "lamp": "./dist/bin/lamp.js",
+    "lamp-app": "./dist/bin/lamp.js"
   },
   "files": [
     "dist"
@@ -28,11 +29,11 @@
     "typescript": "^5.8.3"
   },
   "optionalDependencies": {
-    "@lamp/win32-x64": "0.2.0",
-    "@lamp/linux-x64": "0.2.0",
-    "@lamp/linux-arm64": "0.2.0",
-    "@lamp/darwin-arm64": "0.2.0",
-    "@lamp/darwin-x64": "0.2.0"
+    "lamp-app-win32-x64": "0.2.0",
+    "lamp-app-linux-x64": "0.2.0",
+    "lamp-app-linux-arm64": "0.2.0",
+    "lamp-app-darwin-arm64": "0.2.0",
+    "lamp-app-darwin-x64": "0.2.0"
   },
   "engines": {
     "node": ">=22.18.0"

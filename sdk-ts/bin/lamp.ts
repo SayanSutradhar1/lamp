@@ -25,7 +25,7 @@ export function prepareEntryForEmbeddedV8(source: string, filename: string): str
   const js = isTs ? stripTypeScriptTypes(source, { mode: "strip" }) : source;
 
   const rewritten = js.replace(
-    /^\s*import\s+\{([^}]+)\}\s+from\s+["'](?:\.\.?\/[^"']*index\.(?:ts|js)|lamp)["'];?\s*$/gm,
+    /^\s*import\s+\{([^}]+)\}\s+from\s+["'](?:\.\.?\/[^"']*index\.(?:ts|js)|lamp(?:-app)?)["'];?\s*$/gm,
     (_full, imports: string) => {
       const cleaned = imports
         .split(",")
@@ -57,7 +57,7 @@ export function resolveLampServerBinary(): string {
   }
 
   const exeName = process.platform === "win32" ? "lamp_server.exe" : "lamp_server";
-  const platformPkg = `@lamp/${process.platform}-${process.arch}`;
+  const platformPkg = `lamp-app-${process.platform}-${process.arch}`;
 
   try {
     const require = createRequire(import.meta.url);
