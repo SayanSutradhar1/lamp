@@ -1,6 +1,6 @@
 {
   "name": "lamp-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "High-speed binary LMP1/LCB1 client SDK for the Lamp native backend runtime (Node TCP & Browser binary WebSocket)",
   "type": "module",
   "main": "./dist/src/index.js",
