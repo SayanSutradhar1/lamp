@@ -93,7 +93,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
 
       - name: Download Native Binaries
         uses: actions/download-artifact@v4
@@ -126,8 +125,6 @@ jobs:
 
       - name: Publish Platform Packages
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           shopt -s nullglob
           for pkg in npm/*; do
@@ -138,8 +135,6 @@ jobs:
 
       - name: Publish lamp-client & lamp-app
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           (cd client-ts && npm publish --provenance --access public)
           (cd sdk-ts && npm publish --provenance --access public)
