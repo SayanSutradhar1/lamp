@@ -114,8 +114,14 @@ jobs:
           done
 
       - name: Build & Test TypeScript Packages
+        shell: bash
         run: |
-          cd client-ts && npm ci && npm run build && node --test tests/client_binary.test.ts
+          cd client-ts && npm ci && npm run build
+          if [ -f ../npm/linux-x64/bin/lamp_server ]; then
+            LAMP_SERVER_BIN="../npm/linux-x64/bin/lamp_server" node --test tests/client_binary.test.ts
+          else
+            echo "Skipping client_binary.test.ts (linux-x64 lamp_server not present in this run)"
+          fi
           cd ../sdk-ts && npm ci --omit=optional && npm run build && node --test tests/sdk.test.ts
 
       - name: Publish Platform Packages
