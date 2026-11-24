@@ -28,9 +28,6 @@ jobs:
           - target: darwin-arm64
             os: macos-14
             exe: lamp_server
-          - target: darwin-x64
-            os: macos-13
-            exe: lamp_server
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -44,27 +41,38 @@ jobs:
           path: v8-sdk
           key: v8-monolith-${{ matrix.target }}-${{ vars.V8_SDK_VERSION || 'v1' }}
 
+      - name: Check V8 SDK Availability
+        id: check-v8
+        shell: bash
+        run: |
+          V8_ROOT="${LAMP_V8_ROOT:-${GITHUB_WORKSPACE}/v8-sdk}"
+          if [ -f "${V8_ROOT}/include/v8.h" ]; then
+            echo "has_v8=true" >> "$GITHUB_OUTPUT"
+            echo "v8_root=${V8_ROOT}" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_v8=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping V8 native build for ${{ matrix.target }}: ${V8_ROOT}/include/v8.h not found."
+          fi
+
       - name: Configure CMake (V8 ON)
-        if: steps.cache-v8.outputs.cache-hit == 'true' || env.LAMP_V8_ROOT != ''
-        env:
-          LAMP_V8_ROOT: ${{ env.LAMP_V8_ROOT || format('{0}/v8-sdk', github.workspace) }}
+        if: steps.check-v8.outputs.has_v8 == 'true'
         run: >
           cmake -S . -B build-release-v8
           -DCMAKE_BUILD_TYPE=Release
           -DLAMP_ENABLE_V8=ON
           -DLAMP_BUILD_TESTS=ON
-          -DLAMP_V8_ROOT="${{ env.LAMP_V8_ROOT }}"
+          -DLAMP_V8_ROOT="${{ steps.check-v8.outputs.v8_root }}"
 
       - name: Build lamp_server & V8 Tests
-        if: steps.cache-v8.outputs.cache-hit == 'true' || env.LAMP_V8_ROOT != ''
+        if: steps.check-v8.outputs.has_v8 == 'true'
         run: cmake --build build-release-v8 --config Release --target lamp_server lamp_app_server_test --parallel 4
 
       - name: Run V8 Integration Tests
-        if: steps.cache-v8.outputs.cache-hit == 'true' || env.LAMP_V8_ROOT != ''
+        if: steps.check-v8.outputs.has_v8 == 'true'
         run: ctest --test-dir build-release-v8 -C Release -R lamp_app_server_test --output-on-failure
 
       - name: Upload Native Binary Artifact
-        if: steps.cache-v8.outputs.cache-hit == 'true' || env.LAMP_V8_ROOT != ''
+        if: steps.check-v8.outputs.has_v8 == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: lamp-server-${{ matrix.target }}
@@ -93,7 +101,9 @@ jobs:
           pattern: lamp-server-*
 
       - name: Stage Platform Binaries
+        shell: bash
         run: |
+          shopt -s nullglob
           for dir in artifacts/lamp-server-*; do
             target="${dir#artifacts/lamp-server-}"
             bin=$(find "$dir" -type f \( -name "lamp_server" -o -name "lamp_server.exe" \) | head -n 1)
@@ -108,18 +118,19 @@ jobs:
           cd ../sdk-ts && npm ci --omit=optional && npm run build && node --test tests/sdk.test.ts
 
       - name: Publish Platform Packages
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          shopt -s nullglob
           for pkg in npm/*; do
             if [ -d "$pkg/bin" ]; then
               (cd "$pkg" && npm publish --provenance --access public)
             fi
           done
 
-      - name: Publish lamp-client & lamp
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      - name: Publish lamp-client & lamp-app
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
