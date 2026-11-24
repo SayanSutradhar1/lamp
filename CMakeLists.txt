@@ -1,6 +1,10 @@
 
 cmake_minimum_required(VERSION 3.24)
 
+if(WIN32)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # ============================================================
 # Lamp Framework - Root Build Configuration
 # ============================================================
