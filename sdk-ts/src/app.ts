@@ -368,6 +368,28 @@ export function createLampApp(config: LampAppConfig = {}): LampApp {
       return app;
     },
 
+    registerRouter(router, options) {
+      if (currentState !== "created") {
+        throw new LampError(
+          `Cannot register router "${router?.target ?? "unknown"}" while application state is "${currentState}"`,
+          { code: "FAILED_PRECONDITION", identifier: "APP_ALREADY_STARTED" }
+        );
+      }
+      if (!router || typeof router.resolveOperations !== "function") {
+        throw new LampError("registerRouter requires a valid LampRouter instance", {
+          code: "INVALID_ARGUMENT",
+          identifier: "INVALID_ROUTER",
+        });
+      }
+
+      const resolvedOps = router.resolveOperations(options);
+      for (const op of resolvedOps) {
+        app.register(op.operationId, op.definition);
+      }
+
+      return app;
+    },
+
     async start(): Promise<LampStartInfo> {
       if (currentState === "running") {
         return {

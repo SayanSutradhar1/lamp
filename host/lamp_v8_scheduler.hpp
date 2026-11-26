@@ -549,6 +549,26 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
         return app;
       },
 
+      registerRouter(router, options) {
+        if (currentState !== "created") {
+          throw new LampError(
+            `Cannot register router "${router && router.target ? router.target : "unknown"}" while application state is "${currentState}"`,
+            { code: "FAILED_PRECONDITION", identifier: "APP_ALREADY_STARTED" }
+          );
+        }
+        if (!router || typeof router.resolveOperations !== "function") {
+          throw new LampError("registerRouter requires a valid LampRouter instance", {
+            code: "INVALID_ARGUMENT",
+            identifier: "INVALID_ROUTER",
+          });
+        }
+        const resolvedOps = router.resolveOperations(options);
+        for (const op of resolvedOps) {
+          app.register(op.operationId, op.definition);
+        }
+        return app;
+      },
+
       async start() {
         if (currentState === "running") {
           return { operations: Array.from(ops.keys()) };
@@ -584,8 +604,146 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
     return app;
   }
 
-  globalThis.Lamp = { createLampApp, s, LampError, isLampError };
+  function createLampRegistry() {
+    const entriesList = [];
+    const seenSuffixes = new Set();
+    const segmentRe = /^[a-zA-Z0-9_-]+$/;
+    const registry = {
+      add(operationSuffix, definition) {
+        if (typeof operationSuffix !== "string" || !segmentRe.test(operationSuffix)) {
+          throw new LampError(
+            `Invalid operation suffix "${String(operationSuffix)}"`,
+            { code: "INVALID_ARGUMENT", identifier: "INVALID_OPERATION_SUFFIX" }
+          );
+        }
+        if (seenSuffixes.has(operationSuffix)) {
+          throw new LampError(
+            `Duplicate operation suffix "${operationSuffix}" in registry`,
+            { code: "ALREADY_EXISTS", identifier: "DUPLICATE_OPERATION" }
+          );
+        }
+        if (!definition || typeof definition.handler !== "function") {
+          throw new LampError(
+            `Operation "${operationSuffix}" requires a handler function`,
+            { code: "INVALID_ARGUMENT", identifier: "MISSING_HANDLER" }
+          );
+        }
+        seenSuffixes.add(operationSuffix);
+        entriesList.push({ suffix: operationSuffix, definition });
+        return registry;
+      },
+      entries() {
+        return [...entriesList];
+      },
+    };
+    return registry;
+  }
+
+  function createLampRouter(config) {
+    const targetRe = /^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*$/;
+    if (!config || typeof config.target !== "string" || !targetRe.test(config.target)) {
+      throw new LampError(
+        `Invalid router target "${String(config && config.target)}"`,
+        { code: "INVALID_ARGUMENT", identifier: "INVALID_ROUTER_TARGET" }
+      );
+    }
+    const toArr = (v) => (v === undefined ? [] : Array.isArray(v) ? [...v] : [v]);
+    const mergeTags = (a, b) => {
+      if ((!a || a.length === 0) && (!b || b.length === 0)) return undefined;
+      return Array.from(new Set([...(a || []), ...(b || [])]));
+    };
+    const mergeOpts = (parent, child) => ({
+      execution: parent.execution || child.execution ? { ...(parent.execution || {}), ...(child.execution || {}) } : undefined,
+      cache: child.cache !== undefined ? child.cache : parent.cache,
+      auth: parent.auth || child.auth ? { ...(parent.auth || {}), ...(child.auth || {}) } : undefined,
+      tags: mergeTags(parent.tags, child.tags),
+    });
+
+    const registries = toArr(config.registry);
+    const nested = toArr(config.nesting);
+    const routerOptions = {
+      execution: config.options && config.options.execution ? { ...config.options.execution } : undefined,
+      cache: config.options ? config.options.cache : undefined,
+      auth: config.options && config.options.auth ? { ...config.options.auth } : undefined,
+      tags: config.options && config.options.tags ? [...config.options.tags] : undefined,
+    };
+
+    const router = {
+      description: config.description,
+      target: config.target,
+      options: routerOptions,
+      registries,
+      nested,
+      resolveOperations(mountOptions = {}) {
+        if (mountOptions.prefix !== undefined && !targetRe.test(mountOptions.prefix)) {
+          throw new LampError(`Invalid router mount prefix "${mountOptions.prefix}"`, {
+            code: "INVALID_ARGUMENT",
+            identifier: "INVALID_ROUTER_PREFIX",
+          });
+        }
+        const resolved = [];
+        const seenIds = new Set();
+        const stack = new Set();
+        function walk(cur, parentPath, inheritedOpts) {
+          if (stack.has(cur)) {
+            throw new LampError(`Circular router nesting detected at target "${cur.target}"`, {
+              code: "INVALID_ARGUMENT",
+              identifier: "CIRCULAR_ROUTER_NESTING",
+            });
+          }
+          stack.add(cur);
+          try {
+            const curPath = parentPath ? `${parentPath}.${cur.target}` : cur.target;
+            const effOpts = mergeOpts(inheritedOpts, cur.options || {});
+            for (const reg of cur.registries || []) {
+              for (const entry of reg.entries()) {
+                const operationId = `${curPath}.${entry.suffix}`;
+                if (seenIds.has(operationId)) {
+                  throw new LampError(`Duplicate operation "${operationId}"`, {
+                    code: "ALREADY_EXISTS",
+                    identifier: "DUPLICATE_OPERATION",
+                  });
+                }
+                seenIds.add(operationId);
+                resolved.push({
+                  operationId,
+                  definition: {
+                    ...entry.definition,
+                    execution: effOpts.execution || entry.definition.execution
+                      ? { ...(effOpts.execution || {}), ...(entry.definition.execution || {}) }
+                      : undefined,
+                    cache: entry.definition.cache !== undefined ? entry.definition.cache : effOpts.cache,
+                    auth: effOpts.auth || entry.definition.auth
+                      ? { ...(effOpts.auth || {}), ...(entry.definition.auth || {}) }
+                      : undefined,
+                    tags: mergeTags(effOpts.tags, entry.definition.tags),
+                  },
+                });
+              }
+            }
+            for (const child of cur.nested || []) {
+              walk(child, curPath, effOpts);
+            }
+          } finally {
+            stack.delete(cur);
+          }
+        }
+        walk(router, mountOptions.prefix || "", {
+          execution: mountOptions.execution,
+          cache: mountOptions.cache,
+          auth: mountOptions.auth,
+          tags: mountOptions.tags,
+        });
+        return resolved;
+      },
+    };
+    return router;
+  }
+
+  globalThis.Lamp = { createLampApp, createLampRegistry, createLampRouter, s, LampError, isLampError };
   globalThis.createLampApp = createLampApp;
+  globalThis.createLampRegistry = createLampRegistry;
+  globalThis.createLampRouter = createLampRouter;
   globalThis.s = s;
   globalThis.LampError = LampError;
   globalThis.isLampError = isLampError;

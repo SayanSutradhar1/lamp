@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   LampError,
   createLampApp,
+  createLampRegistry,
+  createLampRouter,
   getNativeHostBridge,
   isLampError,
   isValidOperationId,
@@ -240,4 +242,164 @@ test("createLampApp allowOrigin contract supports boolean, expose/callback, and 
   } finally {
     setNativeHostBridge(prev);
   }
+});
+
+test("createLampRegistry and createLampRouter support flat and nested registry routes", async () => {
+  const userRegistry = createLampRegistry().add("get", {
+    description: "Get user by id",
+    input: s.object({ id: s.string() }),
+    output: s.object({ id: s.string(), scope: s.string() }),
+    handler: ({ input }) => ({ id: input.id, scope: "global" }),
+  });
+
+  const localUsersRegistry = createLampRegistry().add("get", {
+    description: "Get local user by id",
+    input: s.object({ id: s.string() }),
+    output: s.object({ id: s.string(), scope: s.string() }),
+    handler: ({ input }) => ({ id: input.id, scope: "local" }),
+  });
+
+  const localUsersRouter = createLampRouter({
+    description: "Local users module",
+    target: "local_users",
+    registry: [localUsersRegistry],
+  });
+
+  const userRouter = createLampRouter({
+    description: "Users route module",
+    target: "users",
+    registry: [userRegistry],
+    nesting: localUsersRouter,
+  });
+
+  const app = createLampApp();
+  app.registerRouter(userRouter);
+
+  const info = await app.start();
+  assert.deepEqual(info.operations, ["users.get", "users.local_users.get"]);
+
+  assert.deepEqual(await app.invoke("users.get", { id: "u_1" }), {
+    id: "u_1",
+    scope: "global",
+  });
+  assert.deepEqual(await app.invoke("users.local_users.get", { id: "u_2" }), {
+    id: "u_2",
+    scope: "local",
+  });
+
+  await app.stop();
+});
+
+test("createLampRegistry enforces single-segment suffixes and duplicate checks", () => {
+  const registry = createLampRegistry();
+
+  assert.throws(
+    () => registry.add("users.get", { handler: () => null }),
+    (err: unknown) => isLampError(err) && err.identifier === "INVALID_OPERATION_SUFFIX"
+  );
+  assert.throws(
+    () => registry.add("", { handler: () => null }),
+    (err: unknown) => isLampError(err) && err.identifier === "INVALID_OPERATION_SUFFIX"
+  );
+
+  registry.add("get", { handler: () => ({ ok: true }) });
+  assert.throws(
+    () => registry.add("get", { handler: () => ({ ok: true }) }),
+    (err: unknown) => isLampError(err) && err.code === "ALREADY_EXISTS"
+  );
+});
+
+test("createLampRouter and registerRouter merge options with proper precedence and prefix", async () => {
+  const adminRegistry = createLampRegistry()
+    .add("list", {
+      tags: ["read"],
+      handler: () => ["a"],
+    })
+    .add("delete", {
+      auth: { roles: ["superadmin"] },
+      cache: false,
+      execution: { timeoutMs: 5000 },
+      tags: ["danger"],
+      handler: () => ({ deleted: true }),
+    });
+
+  const adminRouter = createLampRouter({
+    description: "Admin routes",
+    target: "admin",
+    registry: [adminRegistry],
+    options: {
+      auth: { allowAnonymous: false, roles: ["admin"] },
+      cache: { ttl: 45 },
+      execution: { timeoutMs: 10000 },
+      tags: ["admin"],
+    },
+  });
+
+  const app = createLampApp({ cache: { enabled: true, maxTtlLimitSeconds: 120 } });
+  app.registerRouter(adminRouter, {
+    prefix: "v1",
+    tags: ["api"],
+    execution: { mode: "adaptive" },
+  });
+
+  const ops = new Map(app.operations().map((op) => [op.id, op]));
+  const listOp = ops.get("v1.admin.list");
+  const deleteOp = ops.get("v1.admin.delete");
+
+  assert.ok(listOp);
+  assert.equal(listOp.cache.enabled, true);
+  assert.equal(listOp.cache.ttlSeconds, 45);
+  assert.equal(listOp.execution.mode, "adaptive");
+  assert.equal(listOp.execution.timeoutMs, 10000);
+  assert.equal(listOp.auth.allowAnonymous, false);
+  assert.deepEqual(listOp.auth.roles, ["admin"]);
+  assert.deepEqual(listOp.tags, ["api", "admin", "read"]);
+
+  assert.ok(deleteOp);
+  assert.equal(deleteOp.cache.enabled, false);
+  assert.equal(deleteOp.execution.timeoutMs, 5000);
+  assert.deepEqual(deleteOp.auth.roles, ["superadmin"]);
+  assert.deepEqual(deleteOp.tags, ["api", "admin", "danger"]);
+
+  await app.start();
+  assert.throws(
+    () => app.registerRouter(adminRouter),
+    (err: unknown) => isLampError(err) && err.code === "FAILED_PRECONDITION"
+  );
+  await app.stop();
+});
+
+test("createLampRouter detects circular nesting and invalid targets", () => {
+  assert.throws(
+    () => createLampRouter({ target: "" }),
+    (err: unknown) => isLampError(err) && err.identifier === "INVALID_ROUTER_TARGET"
+  );
+
+  const childNested: ReturnType<typeof createLampRouter>[] = [];
+  const child = createLampRouter({
+    target: "child",
+    nesting: childNested,
+  });
+  const parent = createLampRouter({
+    target: "parent",
+    nesting: [child],
+  });
+  // Mutate internal array reference? No, nesting is copied, so test direct self-cycle via object spread
+  const cyclic: any = {
+    target: "loop",
+    options: {},
+    registries: [],
+    nested: [],
+  };
+  cyclic.nested = [cyclic];
+  const root = createLampRouter({
+    target: "root",
+    nesting: [cyclic],
+  });
+
+  assert.throws(
+    () => root.resolveOperations(),
+    (err: unknown) => isLampError(err) && err.identifier === "CIRCULAR_ROUTER_NESTING"
+  );
+  assert.equal(parent.target, "parent");
 });

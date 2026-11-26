@@ -368,6 +368,20 @@ export interface LampApp {
   ): LampApp;
 
   /**
+   * Mounts a {@link LampRouter} tree onto the application, compiling all registry entries
+   * and nested routers into canonical dotted operation IDs (e.g. `"users.get"`,
+   * `"users.local_users.get"`).
+   *
+   * @param router - Route module created with `createLampRouter`.
+   * @param options - Optional mount-level prefix and default execution/cache/auth/tag policies.
+   * @returns `this` app instance for fluent chaining.
+   */
+  registerRouter(
+    router: LampRouter,
+    options?: LampRegisterRouterOptions
+  ): LampApp;
+
+  /**
    * Executes registered `onStart` hooks and signals the C++ native runtime that the app is ready.
    *
    * @returns Resolved startup metadata including registered operation names.
@@ -421,4 +435,111 @@ export interface LampApp {
    * @returns `this` app instance for fluent chaining.
    */
   onStop(hook: LifecycleHook): LampApp;
+}
+
+/**
+ * Router-level policy defaults inherited by operations in a {@link LampRouter} and its nested routers.
+ */
+export interface LampRouterOptions {
+  /** Default execution mode, concurrency, and timeout bounds for routes in this module. */
+  readonly execution?: OperationExecutionConfig;
+  /** Default full-cycle wire cache toggle or `{ ttl }` policy for routes in this module. */
+  readonly cache?: boolean | OperationCacheConfig;
+  /** Default authentication, role, scope, and tenant requirements for routes in this module. */
+  readonly auth?: OperationAuthConfig;
+  /** Classification tags automatically attached to all operations under this router. */
+  readonly tags?: readonly string[];
+}
+
+/**
+ * Mount-level configuration options passed to {@link LampApp.registerRouter}.
+ */
+export interface LampRegisterRouterOptions extends LampRouterOptions {
+  /** Optional dotted prefix prepended before the router's `target` (for example `"v1"`). */
+  readonly prefix?: string;
+}
+
+/**
+ * Single operation entry stored inside a {@link LampRegistry}.
+ */
+export interface LampRegistryEntry<TInput = any, TOutput = any> {
+  /** Operation suffix relative to the mounting router's target (for example `"get"` or `"create"`). */
+  readonly suffix: string;
+  /** Operation contract definition (schemas, handler, and per-operation overrides). */
+  readonly definition: OperationDefinition<TInput, TOutput>;
+}
+
+/**
+ * Registry layer container holding business-logic operation definitions keyed by suffix.
+ */
+export interface LampRegistry {
+  /**
+   * Registers an operation definition under a relative operation suffix (for example `"get"`,
+   * not `"users.get"`).
+   *
+   * @typeParam TInput - Operation input type.
+   * @typeParam TOutput - Operation output type.
+   * @param operationSuffix - Single-segment suffix (matching `/^[a-zA-Z0-9_-]+$/`).
+   * @param definition - Input/output schemas, cache/auth options, and handler callback.
+   * @returns `this` registry instance for fluent chaining.
+   */
+  add<TInput = undefined, TOutput = unknown>(
+    operationSuffix: string,
+    definition: OperationDefinition<TInput, TOutput>
+  ): LampRegistry;
+
+  /**
+   * Returns an immutable snapshot of all operation entries registered in this registry.
+   */
+  entries(): readonly LampRegistryEntry[];
+}
+
+/**
+ * Configuration object passed to `createLampRouter`.
+ */
+export interface LampRouterConfig {
+  /** Human-readable description of the route module. */
+  readonly description?: string;
+  /** Relative path prefix for operations in this router (for example `"users"` or `"local_users"`). */
+  readonly target: string;
+  /** One or more {@link LampRegistry} instances containing the route module's business logic. */
+  readonly registry?: LampRegistry | readonly LampRegistry[];
+  /** Optional child router or array of child routers mounted under this router's `target`. */
+  readonly nesting?: LampRouter | readonly LampRouter[];
+  /** Router-level execution, cache, auth, and tag defaults. */
+  readonly options?: LampRouterOptions;
+}
+
+/**
+ * Flattened operation entry produced when resolving a {@link LampRouter} tree.
+ */
+export interface ResolvedRouteOperation {
+  /** Canonical dotted operation identifier (for example `"users.local_users.get"`). */
+  readonly operationId: string;
+  /** Effective operation definition with router and mount options merged. */
+  readonly definition: OperationDefinition<any, any>;
+}
+
+/**
+ * Route layer module managing a target prefix, attached registries, nested routers, and shared options.
+ */
+export interface LampRouter {
+  /** Optional route module description. */
+  readonly description?: string;
+  /** Relative target segment for this router. */
+  readonly target: string;
+  /** Router-level default options. */
+  readonly options: LampRouterOptions;
+  /** Attached business-logic registries. */
+  readonly registries: readonly LampRegistry[];
+  /** Nested child routers. */
+  readonly nested: readonly LampRouter[];
+
+  /**
+   * Resolves all operations in this router and its nested routers into canonical dotted operation IDs.
+   *
+   * @param options - Optional mount-level prefix and default options.
+   * @returns Ordered list of resolved operation definitions ready for `app.register()`.
+   */
+  resolveOperations(options?: LampRegisterRouterOptions): readonly ResolvedRouteOperation[];
 }
