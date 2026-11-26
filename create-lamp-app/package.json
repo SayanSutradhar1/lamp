@@ -1,6 +1,6 @@
 {
   "name": "create-lamp-app",
-  "version": "0.2.1",
+  "version": "0.3.1",
   "description": "Scaffold a TypeScript + Node.js backend project powered by the Lamp C++20/V8 framework",
   "type": "module",
   "main": "./dist/bin/create-lamp-app.js",

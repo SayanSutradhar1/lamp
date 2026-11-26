@@ -68,7 +68,7 @@ export function scaffoldProject(options: ScaffoldOptions): void {
       typecheck: "tsc --noEmit",
     },
     dependencies: {
-      "lamp-app": "^0.2.1",
+      "lamp-app": "^0.3.1",
       "lamp-client": "^0.2.1",
     },
     devDependencies: {

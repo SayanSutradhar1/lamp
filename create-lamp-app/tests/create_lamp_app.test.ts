@@ -32,7 +32,7 @@ test("scaffoldProject creates TypeScript + Node Lamp boilerplate", () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(targetDir, "package.json"), "utf8"));
     assert.equal(pkg.name, "demo-service");
     assert.equal(pkg.type, "module");
-    assert.equal(pkg.dependencies["lamp-app"], "^0.2.1");
+    assert.equal(pkg.dependencies["lamp-app"], "^0.3.1");
     assert.equal(pkg.dependencies["lamp-client"], "^0.2.1");
     assert.equal(pkg.scripts.dev, "lamp serve src/app.ts --port 3000");
 
