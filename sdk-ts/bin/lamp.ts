@@ -37,7 +37,123 @@ export function prepareEntryForEmbeddedV8(source: string, filename: string): str
     }
   );
 
-  return `(async () => {\n${rewritten}\n})()`;
+  const routingShim = `
+if (typeof globalThis.Lamp?.createLampRegistry !== "function") {
+  const __L = globalThis.Lamp;
+  const __LampError = __L.LampError;
+  const __segmentRe = /^[a-zA-Z0-9_-]+$/;
+  const __targetRe = /^[a-zA-Z0-9_-]+(\\.[a-zA-Z0-9_-]+)*$/;
+  __L.createLampRegistry = function createLampRegistry() {
+    const entriesList = [];
+    const seen = new Set();
+    const reg = {
+      add(suffix, def) {
+        if (typeof suffix !== "string" || !__segmentRe.test(suffix)) {
+          throw new __LampError(\`Invalid operation suffix "\${String(suffix)}"\`, { code: "INVALID_ARGUMENT", identifier: "INVALID_OPERATION_SUFFIX" });
+        }
+        if (seen.has(suffix)) {
+          throw new __LampError(\`Duplicate operation suffix "\${suffix}" in registry\`, { code: "ALREADY_EXISTS", identifier: "DUPLICATE_OPERATION" });
+        }
+        if (!def || typeof def.handler !== "function") {
+          throw new __LampError(\`Operation "\${suffix}" requires a handler function\`, { code: "INVALID_ARGUMENT", identifier: "MISSING_HANDLER" });
+        }
+        seen.add(suffix);
+        entriesList.push({ suffix, definition: def });
+        return reg;
+      },
+      entries() { return [...entriesList]; },
+    };
+    return reg;
+  };
+  __L.createLampRouter = function createLampRouter(config) {
+    if (!config || typeof config.target !== "string" || !__targetRe.test(config.target)) {
+      throw new __LampError(\`Invalid router target "\${String(config && config.target)}"\`, { code: "INVALID_ARGUMENT", identifier: "INVALID_ROUTER_TARGET" });
+    }
+    const toArr = (v) => (v === undefined ? [] : Array.isArray(v) ? [...v] : [v]);
+    const mergeTags = (a, b) => (!a?.length && !b?.length ? undefined : Array.from(new Set([...(a || []), ...(b || [])])));
+    const mergeOpts = (p, c) => ({
+      execution: p.execution || c.execution ? { ...(p.execution || {}), ...(c.execution || {}) } : undefined,
+      cache: c.cache !== undefined ? c.cache : p.cache,
+      auth: p.auth || c.auth ? { ...(p.auth || {}), ...(c.auth || {}) } : undefined,
+      tags: mergeTags(p.tags, c.tags),
+    });
+    const registries = toArr(config.registry);
+    const nested = toArr(config.nesting);
+    const routerOptions = {
+      execution: config.options?.execution ? { ...config.options.execution } : undefined,
+      cache: config.options?.cache,
+      auth: config.options?.auth ? { ...config.options.auth } : undefined,
+      tags: config.options?.tags ? [...config.options.tags] : undefined,
+    };
+    const router = {
+      description: config.description,
+      target: config.target,
+      options: routerOptions,
+      registries,
+      nested,
+      resolveOperations(mountOptions = {}) {
+        if (mountOptions.prefix !== undefined && !__targetRe.test(mountOptions.prefix)) {
+          throw new __LampError(\`Invalid router mount prefix "\${mountOptions.prefix}"\`, { code: "INVALID_ARGUMENT", identifier: "INVALID_ROUTER_PREFIX" });
+        }
+        const resolved = [];
+        const seenIds = new Set();
+        const stack = new Set();
+        function walk(cur, parentPath, inheritedOpts) {
+          if (stack.has(cur)) {
+            throw new __LampError(\`Circular router nesting detected at target "\${cur.target}"\`, { code: "INVALID_ARGUMENT", identifier: "CIRCULAR_ROUTER_NESTING" });
+          }
+          stack.add(cur);
+          try {
+            const curPath = parentPath ? \`\${parentPath}.\${cur.target}\` : cur.target;
+            const effOpts = mergeOpts(inheritedOpts, cur.options || {});
+            for (const reg of cur.registries || []) {
+              for (const entry of reg.entries()) {
+                const operationId = \`\${curPath}.\${entry.suffix}\`;
+                if (seenIds.has(operationId)) {
+                  throw new __LampError(\`Duplicate operation "\${operationId}"\`, { code: "ALREADY_EXISTS", identifier: "DUPLICATE_OPERATION" });
+                }
+                seenIds.add(operationId);
+                resolved.push({
+                  operationId,
+                  definition: {
+                    ...entry.definition,
+                    execution: effOpts.execution || entry.definition.execution ? { ...(effOpts.execution || {}), ...(entry.definition.execution || {}) } : undefined,
+                    cache: entry.definition.cache !== undefined ? entry.definition.cache : effOpts.cache,
+                    auth: effOpts.auth || entry.definition.auth ? { ...(effOpts.auth || {}), ...(entry.definition.auth || {}) } : undefined,
+                    tags: mergeTags(effOpts.tags, entry.definition.tags),
+                  },
+                });
+              }
+            }
+            for (const child of cur.nested || []) { walk(child, curPath, effOpts); }
+          } finally { stack.delete(cur); }
+        }
+        walk(router, mountOptions.prefix || "", { execution: mountOptions.execution, cache: mountOptions.cache, auth: mountOptions.auth, tags: mountOptions.tags });
+        return resolved;
+      },
+    };
+    return router;
+  };
+  const __origCreateApp = __L.createLampApp;
+  __L.createLampApp = function createLampApp(config) {
+    const app = __origCreateApp(config);
+    if (typeof app.registerRouter !== "function") {
+      app.registerRouter = function registerRouter(router, options) {
+        if (app.state() !== "created") {
+          throw new __LampError(\`Cannot register router while application state is "\${app.state()}"\`, { code: "FAILED_PRECONDITION", identifier: "APP_ALREADY_STARTED" });
+        }
+        for (const op of router.resolveOperations(options)) {
+          app.register(op.operationId, op.definition);
+        }
+        return app;
+      };
+    }
+    return app;
+  };
+}
+`;
+
+  return `(async () => {\n${routingShim}\n${rewritten}\n})()`;
 }
 
 /**
