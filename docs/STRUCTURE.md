@@ -1,83 +1,47 @@
-# Lamp — Repository Structure and Discovery
+# Repository & Project Structure
 
-## Known root
+## Monorepo Layout (`lamp/`)
 
 ```text
-D:\Projects\lamp\
-├── CMakeLists.txt
-├── runtime/
-│   ├── CMakeLists.txt
-│   ├── core/
-│   ├── http/
-│   │   ├── CMakeLists.txt
-│   │   ├── http_server.hpp
-│   │   ├── http_server.cpp
-│   │   ├── http_connection.hpp
-│   │   ├── http_async_connection.hpp
-│   │   ├── http_completion_queue.hpp
-│   │   ├── http_parser.hpp
-│   │   ├── http_request.hpp
-│   │   ├── http_response.hpp
-│   │   ├── http_router.hpp
-│   │   ├── http_middleware.hpp
-│   │   ├── http_route_group.hpp
-│   │   └── tests/
-│   │       ├── CMakeLists.txt
-│   │       └── http_async_connection_test.cpp
-│   ├── v8/
-│   ├── bridge/
-│   │   ├── CMakeLists.txt
-│   │   ├── request_envelope.hpp
-│   │   ├── result_envelope.hpp
-│   │   ├── execution_dispatcher.hpp
-│   │   ├── http_transport_adapter.hpp
-│   │   ├── async_operation_coordinator.hpp
-│   │   ├── async_http_operation_pump.hpp
-│   │   └── tests/
-│   └── execution/
-│       ├── CMakeLists.txt
-│       ├── async_execution_contract.hpp
-│       ├── async_execution_dispatcher.hpp
-│       ├── native_worker_pool.hpp
-│       ├── v8_isolate_worker_pool.hpp
-│       ├── v8_promise_execution_contract.hpp
-│       ├── v8_promise_continuation_scheduler.hpp
-│       ├── v8_async_worker_integration.hpp
-│       └── tests/
-└── build-msvc-v8/                 # Generated CMake/Ninja build
+lamp/
+├── CMakeLists.txt             # Root C++20 CMake configuration
+├── LICENSE                    # MIT License
+├── CONTRIBUTING.md            # Developer setup & contribution guide
+├── README.md                  # Project overview & quick start
+├── adapters/                  # Protocol adapters (@lamp/node-adapter)
+├── benchmarks/                # C++20 micro-benchmarks
+├── client-ts/                 # lamp-client (Node TCP & Browser WS binary client)
+├── create-lamp-app/           # npx create-lamp-app scaffolder CLI
+├── docs/                      # Architecture, interface, roadmap, and test docs
+├── host/                      # Native C++20 binary server (lamp_server)
+├── npm/                       # Platform-specific prebuilt binary packages
+├── runtime/                   # Modular C++20 runtime libraries
+│   ├── bridge/                # Operation descriptors, registries, V8 host bridge
+│   ├── cache/                 # Sharded LRU+TTL operation caches
+│   ├── core/                  # Lifecycle, DynamicWorkerPool, OriginPolicy, config
+│   ├── execution/             # Async dispatcher, V8IsolateWorkerPool, promises
+│   ├── http/                  # Incremental HTTP parser, router, HttpAsyncServer
+│   ├── security/              # Auth policies, HMAC/SHA-256, rate limiter
+│   ├── serialization/         # Value, SchemaRegistry, Protobuf & JSON codecs
+│   ├── streaming/             # StreamChannel, StreamHub, chunked/SSE codecs
+│   ├── telemetry/             # MetricsRegistry, W3C tracing, health probes
+│   ├── transport/             # LampBinaryServer (LMP1/LCB1), FullCycleWireCache
+│   └── v8/                    # Embedded V8 platform, isolate, context, bindings
+└── sdk-ts/                    # lamp-app server SDK & lamp CLI (serve, build, add)
 ```
 
-This is an **illustrative known-path map**, not a verified exhaustive tree. Some future components are pending, and the exact local checkout is authoritative.
+## Scaffolded Application Layout (`npx create-lamp-app`)
 
-## Discover the real tree (PowerShell)
-
-```powershell
-cd D:\Projects\lamp
-Get-ChildItem -Force | Select-Object Name, Mode
-Get-ChildItem .\runtime -Directory | Select-Object Name
-Get-ChildItem .\runtime -Recurse -File |
-    Where-Object { $_.FullName -notmatch '[\\/]build-' } |
-    Select-Object -ExpandProperty FullName
+```text
+my-server/
+├── package.json               # dev (--watch), build, start, typecheck
+├── tsconfig.json
+└── src/
+    ├── app.ts                 # Main bootstrap (createLampApp, log: true)
+    ├── router.ts              # Root router (target: "app")
+    ├── registry.ts            # Root registry (ping + createErrorHandler)
+    └── modules/               # Created via `npx lamp add <module[/submodule]>`
+        └── user/
+            ├── user.router.ts
+            └── user.registry.ts
 ```
-
-To inspect CMake registrations:
-
-```powershell
-Get-Content .\CMakeLists.txt
-Get-Content .\runtime\CMakeLists.txt
-Get-Content .\runtime\http\CMakeLists.txt
-Get-Content .\runtime\bridge\CMakeLists.txt
-Get-Content .\runtime\execution\CMakeLists.txt
-ctest --test-dir build-msvc-v8 -N
-```
-
-If installed, `git status --short` and `git ls-files` help distinguish tracked source from temporary files.
-
-## Working conventions
-- C++20 native source under `runtime/`.
-- Public headers use includes such as `#include "http/http_request.hpp"` with `runtime/` on the include path.
-- Keep source and test files inside their owning module.
-- Keep manually compiled `.obj` and `.exe` under `build-msvc-v8/manual-tests/`, **not the repository root**.
-- Do not delete unknown root files automatically; inspect before cleanup.
-- The TypeScript SDK folder/layout is **not yet verified**. Inspect repository before creating it.
-- Avoid duplicating existing modules or inventing missing files from this diagram.

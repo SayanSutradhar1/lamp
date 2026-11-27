@@ -1,65 +1,75 @@
-# Lamp — Intended TypeScript Interface
+# Lamp TypeScript Interface (`lamp-app` v0.4.1)
 
-> **Status: design target, NOT an implemented SDK.**
-
-## Canonical application shape
+## 1. Application Bootstrap (`createLampApp`)
 
 ```ts
-import { createLampApp } from "lamp";
+import { createLampApp } from "lamp-app";
+import { rootRouter } from "./router.ts";
 
 const app = createLampApp({
-  transport: "auto",
-  serialization: "protobuf",
-  execution: "adaptive",
-  cache: { enabled: true },
-});
-
-app.register("users.get", {
-  input: UserInputSchema,
-  output: UserOutputSchema,
-  cache: { ttl: 60 },
-  handler: async ({ input }) => {
-    return getUserById(input.id);
+  transport: "lmp1-binary",
+  serialization: "lcb1",
+  execution: "parallel-dynamic",
+  log: true, // default: logs operation registrations & invocations
+  cache: { enabled: true, defaultTtl: 60, maxTtlLimitSeconds: 300 },
+  allowOrigin: (expose, callback) => {
+    expose(["http://localhost:5173"]);
+    callback();
+    return true;
   },
 });
 
-app.start();
+app.registerRouter(rootRouter);
+await app.start();
 ```
 
-`UserInputSchema`, `UserOutputSchema`, and `getUserById` are illustrative application-defined symbols.
+## 2. Registry Layer (`createLampRegistry`) & Error Handling (`createErrorHandler`)
 
-## Required developer experience
-1. Import **`createLampApp`** from `lamp`. Do **not** rename it to `createServer`.
-2. Configure transports, serialization, execution policy, and cache at application creation.
-3. Register **logical operation names** such as `users.get`.
-4. Declare input/output schemas for validation and typing.
-5. Implement sync or async TypeScript handlers.
-6. Allow per-operation cache and execution policy where appropriate.
-7. Start and stop the application through an explicit lifecycle.
-8. Keep transport routing, serialization conversion, scheduling, and HTTP framing internal.
+```ts
+import { LampError, createErrorHandler, createLampRegistry, s } from "lamp-app";
 
-## Conceptual execution path
+const onError = createErrorHandler({
+  log: true,
+  defaultCode: "EXECUTION_FAILED",
+});
 
-```text
-Client request
-  -> transport adapter (HTTP initially; others later)
-  -> operation lookup
-  -> input decoding + validation
-  -> RequestEnvelope
-  -> execution dispatcher / native or V8 worker
-  -> ResultEnvelope
-  -> output validation + serialization
-  -> transport response
+export const userRegistry = createLampRegistry({ onError })
+  .add("get", {
+    description: "Fetch user by ID",
+    input: s.object({ id: s.string({ minLength: 1 }) }),
+    output: s.object({ id: s.string(), name: s.string() }),
+    cache: { ttl: 60 },
+    handler: ({ input }) => {
+      if (input.id === "missing") {
+        throw new LampError("User not found", {
+          code: "NOT_FOUND",
+          identifier: "USER_NOT_FOUND",
+        });
+      }
+      return { id: input.id, name: "Ada Lovelace" };
+    },
+  });
 ```
 
-## Important distinctions
-- `app.register("users.get", ...)` is the public programming model.
-- Internal `HttpRouter` routes and `HttpTransportAdapter` exist, but should not define the public SDK's shape.
-- `transport: "auto"`, `serialization: "protobuf"`, and `execution: "adaptive"` are **proposed configuration values**, not verified runtime capabilities.
-- Exact schema library, generated types, error handling, auth API, and transport mapping are **to be designed**. Do not invent them as existing interfaces.
+## 3. Route Layer (`createLampRouter`) & Nesting
 
-## SDK acceptance criteria
-- TypeScript-first types and useful editor inference.
-- Consistent errors, cancellation/deadline semantics, and request context.
-- Working bridge from TypeScript handlers to the embedded V8/native execution system.
-- Tests demonstrating real application registration, dispatch, serialization, and shutdown.
+```ts
+import { createLampRouter } from "lamp-app";
+import { userRegistry } from "./users.registry.ts";
+import { localUsersRouter } from "./local_users/local_users.router.ts";
+
+export const userRouter = createLampRouter({
+  description: "Users route module",
+  target: "users",
+  registry: [userRegistry],
+  nesting: [localUsersRouter],
+  options: { tags: ["users"] },
+});
+```
+
+When mounted under `rootRouter` (`target: "app"`), operations resolve to `app.users.get` and `app.users.local_users.*`.
+
+## 4. Schemas, Files, and Parallelism
+
+- `s.string()`, `s.number()`, `s.boolean()`, `s.literal()`, `s.enum()`, `s.array()`, `s.object()`, `s.optional()`, `s.file()`
+- `ctx.parallel(items, fn)` executes pure subtasks across C++ `DynamicWorkerPool` worker threads.

@@ -1,31 +1,10 @@
-# Lamp — Concept
+# Lamp Concept
 
-## What Lamp is
-Lamp is a planned high-performance backend framework: a **C++20 native runtime** with an **embedded V8 JavaScript engine**, exposed through a **TypeScript SDK**.
+**Lamp** is a high-performance, operation-oriented backend framework built around a **C++20 native runtime**, an **embedded V8 JavaScript engine**, and a **TypeScript application SDK (`lamp-app`)**.
 
-Developers should write TypeScript operation handlers without having to manage sockets, worker pools, serialization, or native resource ownership.
+Instead of building applications around low-level HTTP routes and Express-style middleware chains, Lamp replaces URL routing with **typed logical operations** (`app.users.get`, `app.users.local_users.list`, `app.compute.parallel`, etc.) organized into two clean layers:
 
-## Problems Lamp aims to solve
-1. **Backend overhead:** Keep transport, scheduling, and other hot paths native where practical.
-2. **Fragmented execution:** Run native and JavaScript operations through a consistent request/result contract.
-3. **Async complexity:** Support asynchronous work, cancellation, deadlines, bounded queues, and deterministic shutdown.
-4. **Transport coupling:** Separate logical operations from HTTP paths and other transport-specific details.
-5. **Serialization cost:** Target protobuf-first operation payloads, with JSON fallback where needed.
-6. **Repeated work:** Add native caching and efficient execution paths.
-7. **Scaling and safety:** Apply backpressure, resource limits, and explicit ownership rather than unbounded threads or buffers.
-8. **Developer experience:** Provide a simple, typed TypeScript application API on top of a complex native runtime.
-9. **Operational reliability:** Eventually provide security, observability, streaming, and production deployment support.
+1. **Route Layer (`createLampRouter`)** — Manages target prefixes, module nesting, shared policies (`execution`, `cache`, `auth`, `tags`), and route-level error handling.
+2. **Registry Layer (`createLampRegistry`)** — Holds business-logic handlers keyed by relative operation suffixes (`"get"`, `"create"`, `"list"`), input/output schemas (`s.*` including `s.file()`), and registry-level error handling.
 
-## Design principles
-- **Operation-oriented**, not Express-like.
-- C++ owns runtime infrastructure; TypeScript defines application behavior.
-- Protocol adapters translate external requests to internal operation envelopes.
-- V8 isolates are thread-affine; never access V8 handles from unrelated threads.
-- Resource limits and error paths are first-class.
-- Tests establish correctness; successful compilation alone does not.
-- Performance is a **goal**, not an established benchmark result.
-
-## Non-goals for the current implementation
-- Do not present Lamp as production-ready or v1.0.
-- Do not assume HTTP/2, HTTP/3, protobuf, caching, or the TypeScript SDK are already implemented.
-- Do not expose internal HTTP routing as the primary TypeScript programming model.
+Everything below the TypeScript contract layer—binary framing (`LMP1`), compact string-interned serialization (`LCB1`), dynamic worker thread scaling (`DynamicWorkerPool`), full-cycle response caching (`FullCycleWireCache`), origin policy enforcement, and telemetry—runs natively in C++20.
