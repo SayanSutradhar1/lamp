@@ -54,7 +54,6 @@ export function scaffoldProject(options: ScaffoldOptions): void {
   }
 
   fs.mkdirSync(path.join(targetDir, "src"), { recursive: true });
-  fs.mkdirSync(path.join(targetDir, "scripts"), { recursive: true });
 
   const packageJson = {
     name: pkgName,
@@ -62,14 +61,13 @@ export function scaffoldProject(options: ScaffoldOptions): void {
     private: true,
     type: "module",
     scripts: {
-      dev: "lamp serve src/app.ts --port 3000",
-      start: "lamp serve src/app.ts --port 3000",
-      client: "node scripts/client.ts",
+      dev: "lamp serve src/app.ts --port 3000 --watch",
+      build: "lamp build src/app.ts --out dist/app.js",
+      start: "lamp serve dist/app.js --port 3000",
       typecheck: "tsc --noEmit",
     },
     dependencies: {
-      "lamp-app": "^0.3.2",
-      "lamp-client": "^0.2.0",
+      "lamp-app": "^0.4.1",
     },
     devDependencies: {
       "@types/node": "^24.0.0",
@@ -93,7 +91,7 @@ export function scaffoldProject(options: ScaffoldOptions): void {
       forceConsistentCasingInFileNames: true,
       verbatimModuleSyntax: true,
     },
-    include: ["src/**/*.ts", "scripts/**/*.ts"],
+    include: ["src/**/*.ts"],
   };
 
   const gitignore = [
@@ -106,22 +104,50 @@ export function scaffoldProject(options: ScaffoldOptions): void {
     "",
   ].join("\n");
 
-  const appTs = `import { LampError, createLampApp, s } from "lamp-app";
+  const registryTs = `import { createErrorHandler, createLampRegistry, s } from "lamp-app";
 
-interface UserRecord {
-  readonly id: string;
-  readonly name: string;
-  readonly role: "member" | "admin";
-}
+const rootErrorHandler = createErrorHandler({
+  log: true,
+});
 
-const users = new Map<string, UserRecord>([
-  ["1", { id: "1", name: "Ada Lovelace", role: "admin" }],
-]);
+export const rootRegistry = createLampRegistry({ onError: rootErrorHandler })
+  .add("ping", {
+    description: "Health check operation",
+    input: s.optional(s.object({})),
+    output: s.object({ ok: s.boolean(), runtime: s.string() }),
+    handler: async () => ({
+      ok: true,
+      runtime: "lamp-v8",
+    }),
+  });
+`;
+
+  const routerTs = `import { createErrorHandler, createLampRouter } from "lamp-app";
+import { rootRegistry } from "./registry.ts";
+
+const appErrorHandler = createErrorHandler({
+  log: true,
+});
+
+export const rootRouter = createLampRouter({
+  description: "Root application router",
+  target: "app",
+  registry: [rootRegistry],
+  nesting: [],
+  options: {
+    onError: appErrorHandler,
+  },
+});
+`;
+
+  const appTs = `import { createLampApp } from "lamp-app";
+import { rootRouter } from "./router.ts";
 
 const app = createLampApp({
   transport: "lmp1-binary",
   serialization: "lcb1",
   execution: "parallel-dynamic",
+  log: true,
   cache: {
     enabled: true,
     defaultTtl: 60,
@@ -129,68 +155,9 @@ const app = createLampApp({
   },
 });
 
-app.register("health.ping", {
-  description: "Health check operation",
-  input: s.object({}),
-  output: s.object({ ok: s.boolean(), runtime: s.string() }),
-  handler: async () => ({
-    ok: true,
-    runtime: "lamp-v8",
-  }),
-});
-
-app.register("users.get", {
-  description: "Fetch a user by ID with binary wire caching",
-  input: s.object({ id: s.string({ minLength: 1 }) }),
-  output: s.object({
-    id: s.string(),
-    name: s.string(),
-    role: s.enum(["member", "admin"]),
-  }),
-  cache: { ttl: 60 },
-  handler: async ({ input }) => {
-    const user = users.get(input.id);
-    if (!user) {
-      throw new LampError(\`User "\${input.id}" not found\`, {
-        code: "NOT_FOUND",
-        identifier: "USER_NOT_FOUND",
-      });
-    }
-    return user;
-  },
-});
-
-app.register("analytics.parallelSquares", {
-  description: "Splits workloads across C++ dynamic worker threads",
-  input: s.object({ values: s.array(s.number()) }),
-  output: s.object({ squares: s.array(s.number()) }),
-  handler: async ({ input, ctx }) => {
-    const squares = await ctx.parallel(input.values, (n) => n * n);
-    return { squares };
-  },
-});
+app.registerRouter(rootRouter);
 
 await app.start();
-`;
-
-  const clientTs = `import { createLampClient } from "lamp-client";
-
-const client = createLampClient({ url: "lmp://127.0.0.1:3000" });
-
-try {
-  const health = await client.call("health.ping", {});
-  console.log("health.ping =>", health);
-
-  const user = await client.call("users.get", { id: "1" });
-  console.log("users.get =>", user);
-
-  const squares = await client.call("analytics.parallelSquares", {
-    values: [2, 4, 6, 8],
-  });
-  console.log("analytics.parallelSquares =>", squares);
-} finally {
-  await client.close();
-}
 `;
 
   const readme = `# ${pkgName}
@@ -199,25 +166,33 @@ Backend project built with **Lamp** (C++20 native runtime + embedded V8 + TypeSc
 
 ## Getting Started
 
-1. Start the native V8 server:
+1. Start the native V8 server in watch mode:
    \`\`\`bash
    npm run dev
    \`\`\`
 
-2. In another terminal, call operations via \`lamp-client\`:
+2. Add a new module (creates \`<name>.router.ts\` & \`<name>.registry.ts\` and auto-registers into parent router):
    \`\`\`bash
-   npm run client
+   npx lamp add user
+   npx lamp add user/profile
    \`\`\`
 
-3. Typecheck your contracts:
+3. Build optimized low-level JS bundle and run production server:
+   \`\`\`bash
+   npm run build
+   npm start
+   \`\`\`
+
+4. Typecheck your contracts:
    \`\`\`bash
    npm run typecheck
    \`\`\`
 
 ## Project Structure
 
-- \`src/app.ts\` — Typed operation contracts (\`createLampApp\`, \`s\`) executed by \`lamp_server\`
-- \`scripts/client.ts\` — Binary \`LMP1/LCB1\` client example (\`createLampClient\`)
+- \`src/app.ts\` — Main application bootstrap (\`createLampApp\`, \`log: true\`)
+- \`src/router.ts\` — Root router (\`createLampRouter\`) where all feature modules are mounted
+- \`src/registry.ts\` — Root business-logic registry (\`createLampRegistry\`, \`createErrorHandler\`)
 - \`tsconfig.json\` — Strict TypeScript configuration for Node >= 22.18 / 24
 `;
 
@@ -234,7 +209,8 @@ Backend project built with **Lamp** (C++20 native runtime + embedded V8 + TypeSc
   fs.writeFileSync(path.join(targetDir, ".gitignore"), gitignore, "utf8");
   fs.writeFileSync(path.join(targetDir, "README.md"), readme, "utf8");
   fs.writeFileSync(path.join(targetDir, "src", "app.ts"), appTs, "utf8");
-  fs.writeFileSync(path.join(targetDir, "scripts", "client.ts"), clientTs, "utf8");
+  fs.writeFileSync(path.join(targetDir, "src", "router.ts"), routerTs, "utf8");
+  fs.writeFileSync(path.join(targetDir, "src", "registry.ts"), registryTs, "utf8");
 }
 
 async function main(): Promise<void> {

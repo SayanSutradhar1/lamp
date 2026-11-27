@@ -11,12 +11,23 @@
  */
 
 export { createLampApp, isValidOperationId } from "./app.ts";
-export { LampError, isLampError, normalizeLampError } from "./errors.ts";
+export {
+  LampError,
+  createErrorHandler,
+  isLampError,
+  normalizeLampError,
+} from "./errors.ts";
 export { getNativeHostBridge, setNativeHostBridge } from "./native_bridge.ts";
 export { createLampRegistry, createLampRouter } from "./router.ts";
 export { s, validateWithSchema } from "./schema.ts";
 
-export type { LampErrorCode, LampErrorOptions } from "./errors.ts";
+export type {
+  LampErrorCode,
+  LampErrorHandler,
+  LampErrorHandlerConfig,
+  LampErrorHandlerContext,
+  LampErrorOptions,
+} from "./errors.ts";
 export type {
   NativeHostBridge,
   NativeParallelTaskPayload,
@@ -44,6 +55,7 @@ export type {
   LampParallelTaskSpec,
   LampRegisterRouterOptions,
   LampRegistry,
+  LampRegistryConfig,
   LampRegistryEntry,
   LampRouter,
   LampRouterConfig,

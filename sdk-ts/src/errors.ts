@@ -119,3 +119,90 @@ export function normalizeLampError(err: unknown): LampError {
     details: { thrownType: typeof err },
   });
 }
+
+/**
+ * Context passed to a {@link LampErrorHandler} when an operation throws.
+ */
+export interface LampErrorHandlerContext {
+  /** Logical dotted operation identifier (e.g. `"users.get"`). */
+  readonly operationId: string;
+  /** Numeric runtime request identifier, if available. */
+  readonly requestId?: number;
+}
+
+/**
+ * Configuration options accepted by {@link createErrorHandler}.
+ */
+export interface LampErrorHandlerConfig {
+  /** Log caught errors via `console.error` (defaults to `true`). */
+  readonly log?: boolean;
+  /** Include stack trace in `details.stack` on normalized errors (defaults to `false`). */
+  readonly includeStack?: boolean;
+  /** Fallback {@link LampErrorCode} used when wrapping non-`LampError` exceptions. */
+  readonly defaultCode?: LampErrorCode;
+  /** Optional hook to transform or redact the normalized {@link LampError} before returning it. */
+  readonly transform?: (
+    err: LampError,
+    ctx: LampErrorHandlerContext
+  ) => LampError | void;
+  /** Optional async/sync side-effect callback (e.g. telemetry or alerting). */
+  readonly onError?: (
+    err: LampError,
+    ctx: LampErrorHandlerContext
+  ) => void | Promise<void>;
+}
+
+/**
+ * Error handler function attachable at registry level (`createLampRegistry({ onError })`)
+ * or route level (`createLampRouter({ onError })`).
+ */
+export type LampErrorHandler = (
+  err: unknown,
+  ctx: LampErrorHandlerContext
+) => LampError | Promise<LampError>;
+
+/**
+ * Creates a reusable {@link LampErrorHandler} for registry-level or route-level error handling.
+ *
+ * @param config - Error logging, normalization, transformation, and side-effect options.
+ * @returns A {@link LampErrorHandler} function.
+ */
+export function createErrorHandler(
+  config: LampErrorHandlerConfig = {}
+): LampErrorHandler {
+  const shouldLog = config.log ?? true;
+  const includeStack = config.includeStack ?? false;
+  const defaultCode = config.defaultCode ?? "EXECUTION_FAILED";
+
+  return async (err, ctx) => {
+    let normalized = isLampError(err)
+      ? err
+      : err instanceof Error
+        ? new LampError(err.message, {
+            code: defaultCode,
+            identifier: err.name || "JS_EXCEPTION",
+            cause: err,
+            details: includeStack && err.stack ? { stack: err.stack } : undefined,
+          })
+        : normalizeLampError(err);
+
+    if (config.transform) {
+      const transformed = config.transform(normalized, ctx);
+      if (transformed) {
+        normalized = transformed;
+      }
+    }
+
+    if (shouldLog) {
+      console.error(
+        `[lamp:error] ${ctx.operationId} [${normalized.code}/${normalized.identifier}]: ${normalized.message}`
+      );
+    }
+
+    if (config.onError) {
+      await config.onError(normalized, ctx);
+    }
+
+    return normalized;
+  };
+}

@@ -1,7 +1,8 @@
-import { LampError } from "./errors.ts";
+import { LampError, type LampErrorHandler } from "./errors.ts";
 import type {
   LampRegisterRouterOptions,
   LampRegistry,
+  LampRegistryConfig,
   LampRegistryEntry,
   LampRouter,
   LampRouterConfig,
@@ -82,19 +83,37 @@ function mergeRouterOptions(
     cache: child.cache !== undefined ? child.cache : parent.cache,
     auth: mergeAuth(parent.auth, child.auth),
     tags: mergeTags(parent.tags, child.tags),
+    onError: child.onError ?? parent.onError,
   };
 }
 
 function mergeOperationWithOptions(
+  operationId: string,
   definition: OperationDefinition<any, any>,
-  routerOptions: LampRouterOptions
+  routerOptions: LampRouterOptions,
+  registryErrorHandler?: LampErrorHandler
 ): OperationDefinition<any, any> {
+  const effectiveOnError = registryErrorHandler ?? routerOptions.onError;
+  const wrappedHandler = effectiveOnError
+    ? async (args: Parameters<OperationDefinition<any, any>["handler"]>[0]) => {
+        try {
+          return await definition.handler(args);
+        } catch (err) {
+          throw await effectiveOnError(err, {
+            operationId,
+            requestId: args.ctx.requestId,
+          });
+        }
+      }
+    : definition.handler;
+
   return {
     ...definition,
     execution: mergeExecution(routerOptions.execution, definition.execution),
     cache: definition.cache !== undefined ? definition.cache : routerOptions.cache,
     auth: mergeAuth(routerOptions.auth, definition.auth),
     tags: mergeTags(routerOptions.tags, definition.tags),
+    handler: wrappedHandler,
   };
 }
 
@@ -104,11 +123,13 @@ function mergeOperationWithOptions(
  *
  * Registries are mounted into a {@link LampRouter} via `createLampRouter({ registry: [...] })`.
  *
+ * @param config - Optional registry configuration (e.g. `onError`).
  * @returns A new {@link LampRegistry} instance.
  */
-export function createLampRegistry(): LampRegistry {
+export function createLampRegistry(config: LampRegistryConfig = {}): LampRegistry {
   const entriesList: LampRegistryEntry[] = [];
   const seenSuffixes = new Set<string>();
+  let registryErrorHandler: LampErrorHandler | undefined = config.onError;
 
   const registry: LampRegistry = {
     add(operationSuffix, definition) {
@@ -145,6 +166,15 @@ export function createLampRegistry(): LampRegistry {
       return registry;
     },
 
+    onError(handler) {
+      registryErrorHandler = handler;
+      return registry;
+    },
+
+    errorHandler() {
+      return registryErrorHandler;
+    },
+
     entries() {
       return [...entriesList];
     },
@@ -178,6 +208,7 @@ export function createLampRouter(config: LampRouterConfig): LampRouter {
     cache: config.options?.cache,
     auth: config.options?.auth ? { ...config.options.auth } : undefined,
     tags: config.options?.tags ? [...config.options.tags] : undefined,
+    onError: config.onError ?? config.options?.onError,
   };
 
   const router: LampRouter = {
@@ -237,7 +268,12 @@ export function createLampRouter(config: LampRouterConfig): LampRouter {
               seenOperationIds.add(operationId);
               resolved.push({
                 operationId,
-                definition: mergeOperationWithOptions(entry.definition, effectiveOptions),
+                definition: mergeOperationWithOptions(
+                  operationId,
+                  entry.definition,
+                  effectiveOptions,
+                  reg.errorHandler()
+                ),
               });
             }
           }
@@ -255,6 +291,7 @@ export function createLampRouter(config: LampRouterConfig): LampRouter {
         cache: mountOptions.cache,
         auth: mountOptions.auth,
         tags: mountOptions.tags,
+        onError: mountOptions.onError,
       };
 
       walk(router, mountOptions.prefix ?? "", baseOptions);

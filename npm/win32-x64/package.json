@@ -1,6 +1,6 @@
 {
   "name": "@sayansutradhar1/lamp-app-win32-x64",
-  "version": "0.3.2",
+  "version": "0.4.1",
   "description": "Prebuilt Lamp native C++20 + embedded V8 server binary for win32-x64",
   "os": [
     "win32"

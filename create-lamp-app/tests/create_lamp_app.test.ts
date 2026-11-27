@@ -22,23 +22,28 @@ test("scaffoldProject creates TypeScript + Node Lamp boilerplate", () => {
       ".gitignore",
       "README.md",
       path.join("src", "app.ts"),
-      path.join("scripts", "client.ts"),
+      path.join("src", "router.ts"),
+      path.join("src", "registry.ts"),
     ];
 
     for (const rel of expectedFiles) {
       assert.equal(fs.existsSync(path.join(targetDir, rel)), true, `Missing ${rel}`);
     }
+    assert.equal(fs.existsSync(path.join(targetDir, "scripts", "client.ts")), false);
 
     const pkg = JSON.parse(fs.readFileSync(path.join(targetDir, "package.json"), "utf8"));
     assert.equal(pkg.name, "demo-service");
     assert.equal(pkg.type, "module");
-    assert.equal(pkg.dependencies["lamp-app"], "^0.3.2");
-    assert.equal(pkg.dependencies["lamp-client"], "^0.2.0");
-    assert.equal(pkg.scripts.dev, "lamp serve src/app.ts --port 3000");
+    assert.equal(pkg.dependencies["lamp-app"], "^0.4.1");
+    assert.equal("lamp-client" in pkg.dependencies, false);
+    assert.equal(pkg.scripts.dev, "lamp serve src/app.ts --port 3000 --watch");
+    assert.equal(pkg.scripts.build, "lamp build src/app.ts --out dist/app.js");
+    assert.equal(pkg.scripts.start, "lamp serve dist/app.js --port 3000");
 
     const appSource = fs.readFileSync(path.join(targetDir, "src", "app.ts"), "utf8");
     assert.match(appSource, /from "lamp-app"/);
     assert.match(appSource, /createLampApp/);
+    assert.match(appSource, /registerRouter\(rootRouter\)/);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }

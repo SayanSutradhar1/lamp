@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   LampError,
+  createErrorHandler,
   createLampApp,
   createLampRegistry,
   createLampRouter,
@@ -13,6 +14,10 @@ import {
   setNativeHostBridge,
   type NativeHostBridge,
 } from "../src/index.ts";
+import { bundleEntryForEmbeddedV8 } from "../bin/lamp.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 test("createLampApp enforces server lifecycle transitions and hooks", async () => {
   const events: string[] = [];
@@ -402,4 +407,128 @@ test("createLampRouter detects circular nesting and invalid targets", () => {
     (err: unknown) => isLampError(err) && err.identifier === "CIRCULAR_ROUTER_NESTING"
   );
   assert.equal(parent.target, "parent");
+});
+
+test("createErrorHandler works at both registry level and route level with precedence", async () => {
+  const seen: string[] = [];
+
+  const routeErr = createErrorHandler({
+    log: false,
+    defaultCode: "INTERNAL",
+    onError: (err, ctx) => {
+      seen.push(`route:${ctx.operationId}:${err.code}`);
+    },
+  });
+
+  const registryErr = createErrorHandler({
+    log: false,
+    defaultCode: "INVALID_ARGUMENT",
+    transform: (err) =>
+      new LampError(`Transformed: ${err.message}`, {
+        code: err.code,
+        identifier: "CUSTOM_REG_ERR",
+      }),
+    onError: (err, ctx) => {
+      seen.push(`registry:${ctx.operationId}:${err.identifier}`);
+    },
+  });
+
+  const regWithOverride = createLampRegistry({ onError: registryErr }).add("fail", {
+    handler: () => {
+      throw new Error("bad input");
+    },
+  });
+
+  const regInherited = createLampRegistry().add("boom", {
+    handler: () => {
+      throw new Error("route boom");
+    },
+  });
+
+  const router = createLampRouter({
+    target: "orders",
+    registry: [regWithOverride, regInherited],
+    options: { onError: routeErr },
+  });
+
+  const app = createLampApp({ log: false });
+  app.registerRouter(router);
+  await app.start();
+
+  await assert.rejects(
+    () => app.invoke("orders.fail"),
+    (err: unknown) =>
+      isLampError(err) &&
+      err.code === "INVALID_ARGUMENT" &&
+      err.identifier === "CUSTOM_REG_ERR" &&
+      err.message === "Transformed: bad input"
+  );
+
+  await assert.rejects(
+    () => app.invoke("orders.boom"),
+    (err: unknown) => isLampError(err) && err.code === "INTERNAL"
+  );
+
+  assert.deepEqual(seen, [
+    "registry:orders.fail:CUSTOM_REG_ERR",
+    "route:orders.boom:INTERNAL",
+  ]);
+  await app.stop();
+});
+
+test("createLampApp log config defaults to true and can be disabled", async () => {
+  const origLog = console.log;
+  const logged: string[] = [];
+  console.log = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  };
+
+  try {
+    const defaultApp = createLampApp();
+    defaultApp.register("sys.ping", { handler: () => ({ ok: true }) });
+    await defaultApp.start();
+    await defaultApp.invoke("sys.ping");
+    await defaultApp.stop();
+    assert.equal(logged.some((l) => l.includes("sys.ping")), true);
+
+    logged.length = 0;
+    const silentApp = createLampApp({ log: false });
+    silentApp.register("sys.ping", { handler: () => ({ ok: true }) });
+    await silentApp.start();
+    await silentApp.invoke("sys.ping");
+    await silentApp.stop();
+    assert.equal(logged.length, 0);
+  } finally {
+    console.log = origLog;
+  }
+});
+
+test("bundleEntryForEmbeddedV8 bundles multi-file TypeScript modules into low-level JS", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lamp-bundle-test-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmpDir, "registry.ts"),
+      `import { createLampRegistry } from "lamp-app";\nexport const reg = createLampRegistry().add("ping", { handler: () => ({ ok: true }) });\n`,
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "router.ts"),
+      `import { createLampRouter } from "lamp-app";\nimport { reg } from "./registry.ts";\nexport const rootRouter = createLampRouter({ target: "app", registry: [reg] });\n`,
+      "utf8"
+    );
+    const entryPath = path.join(tmpDir, "app.ts");
+    fs.writeFileSync(
+      entryPath,
+      `import { createLampApp } from "lamp-app";\nimport { rootRouter } from "./router.ts";\nconst app = createLampApp();\napp.registerRouter(rootRouter);\nawait app.start();\n`,
+      "utf8"
+    );
+
+    const bundled = bundleEntryForEmbeddedV8(entryPath);
+    assert.equal(bundled.startsWith("// @lamp-bundle"), true);
+    assert.match(bundled, /__lamp_mod_0/);
+    assert.match(bundled, /__lamp_mod_1/);
+    assert.equal(bundled.includes("import "), false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

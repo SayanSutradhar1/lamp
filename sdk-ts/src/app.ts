@@ -196,6 +196,7 @@ export function createLampApp(config: LampAppConfig = {}): LampApp {
       ? Math.min(config.cache.defaultTtl, maxTtlLimitSeconds)
       : Math.min(60, maxTtlLimitSeconds);
 
+  const logEnabled = config.log ?? true;
   const resolvedOriginPolicy = resolveOriginPolicy(config.allowOrigin);
   getNativeHostBridge()?.configureOriginAllowance?.(JSON.stringify(resolvedOriginPolicy));
 
@@ -256,6 +257,10 @@ export function createLampApp(config: LampAppConfig = {}): LampApp {
           scopes: scopesRaw ? scopesRaw.split(",").filter(Boolean) : [],
         },
       };
+
+      if (logEnabled) {
+        console.log(`[lamp] -> ${entry.meta.id} (#${ctx.requestId})`);
+      }
 
       const rawOutput = await entry.definition.handler({
         input: validatedInput,
@@ -345,6 +350,10 @@ export function createLampApp(config: LampAppConfig = {}): LampApp {
 
       const stored: StoredOperation = { meta, definition };
       operationsMap.set(operationId, stored);
+
+      if (logEnabled) {
+        console.log(`[lamp] + registered ${operationId}`);
+      }
 
       const bridge = getNativeHostBridge();
       if (bridge && typeof bridge.registerOperation === "function") {

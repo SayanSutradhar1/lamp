@@ -487,6 +487,7 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
     }
     globalThis.__lampNativeBridge?.configureOriginAllowance?.(JSON.stringify(originPolicy));
 
+    const logEnabled = config.log ?? true;
     const app = {
       register(operationId, definition) {
         if (!definition || typeof definition.handler !== "function") {
@@ -495,6 +496,15 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
             identifier: "MISSING_HANDLER",
           });
         }
+        const effectiveDefinition = logEnabled
+          ? {
+              ...definition,
+              handler: (args) => {
+                console.log(`[lamp] -> ${operationId} (#${args.ctx?.requestId ?? 0})`);
+                return definition.handler(args);
+              },
+            }
+          : definition;
         const ttl =
           typeof definition.cache === "object" && definition.cache && definition.cache.ttl !== undefined
             ? definition.cache.ttl
@@ -525,8 +535,11 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
           tags: definition.tags ?? [],
         };
 
-        ops.set(operationId, { meta, definition });
-        allOps.set(operationId, { meta, definition });
+        ops.set(operationId, { meta, definition: effectiveDefinition });
+        allOps.set(operationId, { meta, definition: effectiveDefinition });
+        if (logEnabled) {
+          console.log(`[lamp] + registered ${operationId}`);
+        }
 
         if (globalThis.__lampNativeBridge && typeof globalThis.__lampNativeBridge.registerOperation === "function") {
           globalThis.__lampNativeBridge.registerOperation(
@@ -604,10 +617,43 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
     return app;
   }
 
-  function createLampRegistry() {
+  function createErrorHandler(config = {}) {
+    const shouldLog = config.log ?? true;
+    const includeStack = config.includeStack ?? false;
+    const defaultCode = config.defaultCode ?? "EXECUTION_FAILED";
+    return async (err, ctx) => {
+      let normalized = isLampError(err)
+        ? err
+        : err instanceof Error
+          ? new LampError(err.message, {
+              code: defaultCode,
+              identifier: err.name || "JS_EXCEPTION",
+              cause: err,
+              details: includeStack && err.stack ? { stack: err.stack } : undefined,
+            })
+          : new LampError("Operation execution failed with non-Error value", {
+              code: defaultCode,
+              identifier: "NON_ERROR_THROW",
+            });
+      if (config.transform) {
+        const transformed = config.transform(normalized, ctx);
+        if (transformed) normalized = transformed;
+      }
+      if (shouldLog) {
+        console.error(`[lamp:error] ${ctx.operationId} [${normalized.code}/${normalized.identifier}]: ${normalized.message}`);
+      }
+      if (config.onError) {
+        await config.onError(normalized, ctx);
+      }
+      return normalized;
+    };
+  }
+
+  function createLampRegistry(config = {}) {
     const entriesList = [];
     const seenSuffixes = new Set();
     const segmentRe = /^[a-zA-Z0-9_-]+$/;
+    let registryErrorHandler = config.onError;
     const registry = {
       add(operationSuffix, definition) {
         if (typeof operationSuffix !== "string" || !segmentRe.test(operationSuffix)) {
@@ -631,6 +677,13 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
         seenSuffixes.add(operationSuffix);
         entriesList.push({ suffix: operationSuffix, definition });
         return registry;
+      },
+      onError(handler) {
+        registryErrorHandler = handler;
+        return registry;
+      },
+      errorHandler() {
+        return registryErrorHandler;
       },
       entries() {
         return [...entriesList];
@@ -740,10 +793,11 @@ inline constexpr std::string_view kEmbeddedLampSdkBootstrapJs = R"JS(
     return router;
   }
 
-  globalThis.Lamp = { createLampApp, createLampRegistry, createLampRouter, s, LampError, isLampError };
+  globalThis.Lamp = { createLampApp, createLampRegistry, createLampRouter, createErrorHandler, s, LampError, isLampError };
   globalThis.createLampApp = createLampApp;
   globalThis.createLampRegistry = createLampRegistry;
   globalThis.createLampRouter = createLampRouter;
+  globalThis.createErrorHandler = createErrorHandler;
   globalThis.s = s;
   globalThis.LampError = LampError;
   globalThis.isLampError = isLampError;

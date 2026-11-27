@@ -1,3 +1,4 @@
+import type { LampErrorHandler } from "./errors.ts";
 import type { LampSchema } from "./schema.ts";
 
 /** Transport mode exposed by the C++ backend runtime (`"lmp1-binary"` multiplexed TCP/WebSocket or `"auto"`). */
@@ -145,6 +146,8 @@ export interface LampAppConfig {
   readonly security?: LampSecurityConfig;
   /** Cross-origin allowance policy (`false` by default; `true` allows all; or `(expose, callback) => boolean`). */
   readonly allowOrigin?: LampAllowOriginConfig;
+  /** Log registry operations and invocations to console (`true` by default). */
+  readonly log?: boolean;
 }
 
 /**
@@ -449,6 +452,16 @@ export interface LampRouterOptions {
   readonly auth?: OperationAuthConfig;
   /** Classification tags automatically attached to all operations under this router. */
   readonly tags?: readonly string[];
+  /** Route-level error handler created via `createErrorHandler`. */
+  readonly onError?: LampErrorHandler;
+}
+
+/**
+ * Configuration options for {@link createLampRegistry}.
+ */
+export interface LampRegistryConfig {
+  /** Registry-level error handler applied to all operations in this registry. */
+  readonly onError?: LampErrorHandler;
 }
 
 /**
@@ -489,6 +502,16 @@ export interface LampRegistry {
   ): LampRegistry;
 
   /**
+   * Attaches a registry-level error handler created via `createErrorHandler`.
+   */
+  onError(handler: LampErrorHandler): LampRegistry;
+
+  /**
+   * Returns the attached registry-level error handler, if configured.
+   */
+  errorHandler(): LampErrorHandler | undefined;
+
+  /**
    * Returns an immutable snapshot of all operation entries registered in this registry.
    */
   entries(): readonly LampRegistryEntry[];
@@ -506,8 +529,10 @@ export interface LampRouterConfig {
   readonly registry?: LampRegistry | readonly LampRegistry[];
   /** Optional child router or array of child routers mounted under this router's `target`. */
   readonly nesting?: LampRouter | readonly LampRouter[];
-  /** Router-level execution, cache, auth, and tag defaults. */
+  /** Router-level execution, cache, auth, tag, and error-handler defaults. */
   readonly options?: LampRouterOptions;
+  /** Convenience alias for `options.onError` at the router level. */
+  readonly onError?: LampErrorHandler;
 }
 
 /**
