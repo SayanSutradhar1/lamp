@@ -1,6 +1,6 @@
 {
   "name": "lamp-app",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Server-side contract SDK for the Lamp native C++ binary backend runtime (use lamp-client for client contracts)",
   "type": "module",
   "main": "./dist/src/index.js",

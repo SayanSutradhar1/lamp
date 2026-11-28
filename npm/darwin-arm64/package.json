@@ -1,6 +1,6 @@
 {
   "name": "@sayansutradhar1/lamp-app-darwin-arm64",
-  "version": "0.2.0",
+  "version": "0.4.2",
   "description": "Prebuilt Lamp native C++20 + embedded V8 server binary for darwin-arm64",
   "os": [
     "darwin"
